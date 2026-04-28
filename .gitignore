@@ -1,0 +1,20 @@
+# ── CyberArk installer files ────────────────────────────────────
+# Exclude all files inside Installers/ but keep the folder structure
+# visible on GitHub via .gitkeep placeholders
+Installers/**/*
+!Installers/**/.gitkeep
+
+# ── Windows Server ISO ───────────────────────────────────────────
+ISO/
+
+# ── Claude Code project files ────────────────────────────────────
+.claude/
+
+# ── Runtime state (generated during deployment) ──────────────────
+Config/DeployedVMs.xml
+
+# ── Deployment logs ──────────────────────────────────────────────
+Logs/
+
+# ── Temp files ───────────────────────────────────────────────────
+*.tmp
