@@ -131,7 +131,9 @@ Installers\
 
 ### Silent Install Response Files
 
-The Vault installer requires two recorded response files that capture your silent install answers. These must be generated **once** on any Windows machine by running the Vault installer in record mode:
+The Vault installer uses two recorded response files (`Helpers\setup.iss` and `Helpers\Setup-client.iss`) to drive the silent install. **Both files are already included in this repo** — no action needed.
+
+If you ever switch to a different CyberArk version and the installer wizard changes, regenerate them by running the installer in record mode:
 
 ```powershell
 # Record Vault server install
@@ -140,8 +142,6 @@ The Vault installer requires two recorded response files that capture your silen
 # Record PrivateArk Client install
 .\Installers\Client\Client\setup.exe /r /f1".\Helpers\Setup-client.iss"
 ```
-
-Run through each installer wizard with your desired settings. The `.iss` files are then reused for all unattended deployments. Both files are already included in this repo — regenerate them only if your installer version changes.
 
 ---
 
