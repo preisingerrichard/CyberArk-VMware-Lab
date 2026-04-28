@@ -326,7 +326,7 @@ CyberArk-VMware-Lab\
 
 ## Notes
 
-- **Deployment time:** ~2–3 hours end-to-end on an SSD
+- **Deployment time:** ~1 hour end-to-end on an SSD
 - **Host RAM:** 16 GB minimum recommended (VMs use ~16 GB combined when all running)
 - **Re-runnable:** Every script checks for existing state and skips completed steps, so individual scripts are safe to re-run after a partial failure
 - **CyberArk version:** Tested with CyberArk v14/v15 component packages
