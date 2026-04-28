@@ -90,7 +90,7 @@ function New-CyberArkDomainServiceAccounts {
         [Parameter(Mandatory)][string]$DomainDN    # e.g. DC=cyberark,DC=lab
     )
 
-    $accounts = ($CAConfig.ServiceAccounts | ForEach-Object {
+    $accounts = ($CAConfig.ServiceAccounts.Accounts | ForEach-Object {
         "`$accounts += @{ Name='$($_.Name)'; Desc='$($_.Description)' }"
     }) -join "`n"
 
@@ -107,7 +107,7 @@ foreach (`$acct in `$accounts) {
         continue
     }
 
-    `$secPass = ConvertTo-SecureString 'CyberArk!Svc2024' -AsPlainText -Force
+    `$secPass = ConvertTo-SecureString '$($CAConfig.ServiceAccounts.Password)' -AsPlainText -Force
     New-ADUser -Name `$acct.Name ``
         -SamAccountName `$acct.Name ``
         -UserPrincipalName "`$(`$acct.Name)@cyberark.lab" ``

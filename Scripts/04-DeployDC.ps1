@@ -114,7 +114,7 @@ Write-Host "OUs created"
 )
 
 foreach (`$sa in `$serviceAccounts) {
-    `$secPass = ConvertTo-SecureString 'Cyb3rArk!Svc2024' -AsPlainText -Force
+    `$secPass = ConvertTo-SecureString '$($CyberArkConfig.ServiceAccounts.Password)' -AsPlainText -Force
     New-ADUser -Name `$sa.Name ``
         -SamAccountName `$sa.Name ``
         -UserPrincipalName "`$(`$sa.Name)@cyberark.lab" ``

@@ -53,9 +53,12 @@
         }
     }
 
-    ServiceAccounts = @(
-        @{ Name = "CyberArk-CPM";  Description = "CPM Service Account" },
-        @{ Name = "CyberArk-PVWA"; Description = "PVWA Service Account" },
-        @{ Name = "CyberArk-PSM";  Description = "PSM Service Account" }
-    )
+    ServiceAccounts = @{
+        Password = "Cyb3rArk!Svc2024"
+        Accounts = @(
+            @{ Name = "CyberArk-CPM";  Description = "CPM Service Account" },
+            @{ Name = "CyberArk-PVWA"; Description = "PVWA Service Account" },
+            @{ Name = "CyberArk-PSM";  Description = "PSM Service Account" }
+        )
+    }
 }
