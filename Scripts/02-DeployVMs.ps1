@@ -14,6 +14,7 @@ Import-Module "$PSScriptRoot\..\Helpers\GuestHelper.psm1" -Force
 
 $Config = Import-PowerShellDataFile $ConfigPath
 Initialize-VMwareHelper -Config $Config.VMware
+$windowsVMs = $Config.VMs | Where-Object { $_.OS -ne 'RockyLinux9' }
 
 $templateVMX = Join-Path $Config.VMware.DefaultVMFolder "$($Config.VMware.TemplateName)\$($Config.VMware.TemplateName).vmx"
 
@@ -28,8 +29,8 @@ Write-Host ("=" * 60) -ForegroundColor Cyan
 # Track deployed VMs
 $deployedVMs = @{}
 
-foreach ($vm in $Config.VMs) {
-    Write-Host "`n--- Deploying: $($vm.Name) ($($vm.Description)) ---" -ForegroundColor Yellow
+foreach ($vm in $windowsVMs) {
+    Write-Host "`n[Deploying $($vm.Name) - $($vm.Description)]" -ForegroundColor Yellow
 
     # Clone from template
     $vmxPath = New-LabVMFromTemplate `
@@ -57,14 +58,14 @@ foreach ($vm in $Config.VMs) {
 
 # Wait for all VMs to be ready
 Write-Host "`nWaiting for all VMs to boot..." -ForegroundColor Cyan
-foreach ($vm in $Config.VMs) {
+foreach ($vm in $windowsVMs) {
     $vmxPath = $deployedVMs[$vm.Name]
     Wait-LabVMReady -VMXPath $vmxPath -TimeoutSeconds 600 `
         -GuestUser $Config.LocalAdmin.Username -GuestPassword $Config.LocalAdmin.Password
 }
 
 # Configure each VM
-foreach ($vm in $Config.VMs) {
+foreach ($vm in $windowsVMs) {
     $vmxPath = $deployedVMs[$vm.Name]
     Write-Host "`nConfiguring: $($vm.Name)" -ForegroundColor Yellow
 
@@ -98,7 +99,7 @@ foreach ($vm in $Config.VMs) {
 
 # Wait for all reboots
 Start-Sleep -Seconds 30
-foreach ($vm in $Config.VMs) {
+foreach ($vm in $windowsVMs) {
     Wait-LabVMReady -VMXPath $deployedVMs[$vm.Name] -TimeoutSeconds 300 `
         -GuestUser $Config.LocalAdmin.Username -GuestPassword $Config.LocalAdmin.Password
 }
@@ -108,7 +109,7 @@ foreach ($vm in $Config.VMs) {
 # When DC01 is promoted, the domain SID is derived from its (template) machine SID.
 # COMP01/VAULT01 (also cloned from that template) then have the same SID as the domain,
 # which causes Add-Computer to fail with "SID of the domain identical to the SID of this machine".
-$sysprepVMs = $Config.VMs | Where-Object {
+$sysprepVMs = $windowsVMs | Where-Object {
     $roles = if ($_.Role -is [System.Array]) { $_.Role } else { @($_.Role) }
     -not ($roles -contains "DomainController")
 }
@@ -273,13 +274,6 @@ if ($sysprepVMs) {
     }
 }
 
-# Snapshot all VMs
-foreach ($vm in $Config.VMs) {
-    Stop-LabVM -VMXPath $deployedVMs[$vm.Name]
-    Start-Sleep -Seconds 10
-    New-LabVMSnapshot -VMXPath $deployedVMs[$vm.Name] -SnapshotName "Configured-PreDomain"
-    Start-LabVM -VMXPath $deployedVMs[$vm.Name] -NoGUI
-}
 
 Write-Host "`n$("=" * 60)" -ForegroundColor Green
 Write-Host "All VMs deployed and configured!" -ForegroundColor Green

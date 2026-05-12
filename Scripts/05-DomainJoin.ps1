@@ -23,16 +23,22 @@ Write-Host "=" * 60 -ForegroundColor Cyan
 Write-Host "Joining VMs to Domain: $($Config.Domain.Name)" -ForegroundColor Cyan
 Write-Host "=" * 60 -ForegroundColor Cyan
 
+# ================================================================
+# Step 1: Join each eligible VM to the domain
+# Vault stays standalone; only Windows Server VMs that are not DC get joined.
+# ================================================================
+
 # Only join non-DC, non-Vault VMs to the domain.
 # Vault should remain standalone and not be domain joined.
 $nonDCVMs = $Config.VMs | Where-Object {
     $roles = if ($_.Role -is [System.Array]) { $_.Role } else { @($_.Role) }
+    $_.OS -eq 'WindowsServer2022' -and
     -not ($roles -contains "DomainController") -and -not ($roles -contains "Vault")
 }
 
 foreach ($vm in $nonDCVMs) {
     $vmxPath = $deployedVMs[$vm.Name]
-    Write-Host "`n--- Joining: $($vm.Name) ---" -ForegroundColor Yellow
+    Write-Host "`n[Joining $($vm.Name)]" -ForegroundColor Yellow
 
     # Ensure DNS points to DC before attempting join
     $setDNS = @"
@@ -138,15 +144,6 @@ if (`$domain -eq '$($Config.Domain.Name)') {
     Write-Host "  $($vm.Name) domain join confirmed." -ForegroundColor Green
 }
 
-# Snapshot — delete first so re-runs don't fail with "name already exists"
-foreach ($vm in $nonDCVMs) {
-    $vmx = $deployedVMs[$vm.Name]
-    Stop-LabVM -VMXPath $vmx
-    Start-Sleep -Seconds 10
-    Invoke-VMRun -Arguments @("deleteSnapshot", "`"$vmx`"", "DomainJoined") -NoThrow | Out-Null
-    New-LabVMSnapshot -VMXPath $vmx -SnapshotName "DomainJoined"
-    Start-LabVM -VMXPath $vmx -NoGUI
-}
 
 Write-Host "`n$("=" * 60)" -ForegroundColor Green
 Write-Host "All eligible VMs joined to domain (Vault excluded)." -ForegroundColor Green

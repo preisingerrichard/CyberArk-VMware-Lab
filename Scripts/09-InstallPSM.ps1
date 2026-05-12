@@ -59,7 +59,7 @@ $f = Get-ChildItem 'C:\LabSetup\Logs' -Filter 'error_*.log' -ErrorAction Silentl
      Sort-Object LastWriteTime | Select-Object -Last 1
 if ($f) { Write-Output $f.FullName } else { Write-Output '' }
 '@
-            $guestLog = $latestLog.Output.Trim()
+            $guestLog = "$($latestLog.StdOut)".Trim()
             if ($guestLog) {
                 Copy-FileFromLabVM -VMXPath $VMXPath -GuestPath $guestLog `
                     -HostPath $hostLog -GuestUser $GuestUser -GuestPassword $GuestPassword | Out-Null
@@ -167,17 +167,64 @@ if (-not (Test-Path $autoDir)) {
 # ================================================================
 Write-Host "`n[Step 3] Running PSM pre-reboot stages..." -ForegroundColor Yellow
 
-# --- Skip check ---
 Write-Host "  Checking for existing PSM installation..." -ForegroundColor DarkGray
-$skipCheck = Invoke-LabVMPowerShell -VMXPath $psmVMX -GuestUser $guestUser `
+$installState = Invoke-LabVMPowerShell -VMXPath $psmVMX -GuestUser $guestUser `
     -GuestPassword $guestPass -NoThrow -ScriptBlock @'
-if (Get-Service 'Cyber-Ark Privileged Session Manager' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }
+$psmSvc  = Get-Service 'Cyber-Ark Privileged Session Manager' -ErrorAction SilentlyContinue
+$casosDll = Test-Path 'C:\inetpub\wwwroot\PasswordVault\bin\CyberArk.Casos.dll'
+if ($psmSvc -and $casosDll)  { exit 0 }   # fully done
+if ($psmSvc -and -not $casosDll) { exit 2 }   # PSM installed but PVWA DLL missing -- registration needed
+exit 1   # PSM not installed
 '@
 
-if ($skipCheck.ExitCode -eq 0) {
-    Write-Host "  [SKIP] PSM service already present - skipping to post-install verification" -ForegroundColor Yellow
+if ($installState.ExitCode -eq 0) {
+    Write-Host "  [SKIP] PSM fully installed and PVWA DLL present" -ForegroundColor Yellow
+} elseif ($installState.ExitCode -eq 2) {
+    # PSM service exists but CyberArk.Casos.dll missing from PVWA bin.
+    # Registration step copies this DLL -- re-run it without touching PSM itself.
+    Write-Host "  PSM installed but CyberArk.Casos.dll missing from PVWA bin -- re-running Registration" -ForegroundColor Yellow
+
+    # Patch RegistrationConfig with vault address / user before re-running
+    Invoke-GuestStep -VMXPath $psmVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "setup" -ScriptBlock @"
+$findAutoDir
+
+function Set-XmlParam (`$xmlPath, `$paramName, `$newValue) {
+    [xml]`$doc = Get-Content `$xmlPath -Raw
+    `$node = `$doc.SelectSingleNode("//*[@Name='`$paramName']")
+    if (-not `$node) {
+        `$node = `$doc.SelectNodes('//*') |
+            Where-Object { `$_.Attributes -and `$_.Attributes['Name'] -and
+                           `$_.Attributes['Name'].Value -ieq `$paramName } |
+            Select-Object -First 1
+    }
+    if (`$node) {
+        if (`$node.Attributes['Value']) { `$node.SetAttribute('Value', `$newValue) }
+        else { `$node.InnerText = `$newValue }
+        `$doc.Save(`$xmlPath)
+        Write-Host "  [OK] `$paramName = `$newValue"
+    } else { Write-Warning "  `$paramName not found in `$(Split-Path `$xmlPath -Leaf)" }
+}
+
+`$regConfig = "`$autoDir\Registration\RegistrationConfig.xml"
+if (Test-Path `$regConfig) {
+    Set-XmlParam `$regConfig 'vaultip'       '$($CAConfig.Vault.VaultAddress)'
+    Set-XmlParam `$regConfig 'vaultusername' '$($CAConfig.Vault.AdminUser)'
+    Set-XmlParam `$regConfig 'accepteula'    'yes'
+} else { Write-Warning "Registration config not found: `$regConfig" }
+"@
+
+    Invoke-GuestStep -VMXPath $psmVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "registration" -ScriptBlock @"
+$findAutoDir
+Set-Location `$autoDir
+Write-Host 'Running Execute-Stage.ps1 (Registration)...'
+& .\Execute-Stage.ps1 -configFilePath '.\Registration\RegistrationConfig.xml' -pwd '$($CAConfig.Vault.AdminPassword)'
+Write-Host '[OK] Registration complete'
+"@
+    Write-Host "  [OK] Registration complete -- CyberArk.Casos.dll deployed to PVWA" -ForegroundColor Green
 } else {
-    # --- 3a: Patch registration config ---
+    # Step 3a: Patch registration config
     Write-Host "  [Setup] Patching registration config..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $psmVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "setup" -ScriptBlock @"
@@ -208,7 +255,7 @@ if (Test-Path `$regConfig) {
 } else { Write-Warning "Registration config not found: `$regConfig" }
 "@
 
-    # --- 3b: Readiness ---
+    # Step 3b: Readiness
     Write-Host "  [1/3] Running PSM Readiness check..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $psmVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "readiness" -ScriptBlock @"
@@ -220,7 +267,7 @@ Write-Host '[OK] Readiness complete'
 "@
     Write-Host "  [1/3] Readiness complete" -ForegroundColor Green
 
-    # --- 3c: Prerequisites ---
+    # Step 3c: Prerequisites
     Write-Host "  [2/3] Installing PSM prerequisites (may take 5-10 min)..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $psmVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "prerequisites" -ScriptBlock @"
@@ -232,7 +279,7 @@ Write-Host '[OK] Prerequisites complete'
 "@
     Write-Host "  [2/3] Prerequisites complete" -ForegroundColor Green
 
-    # --- 3d: Installation (may trigger reboot) ---
+    # Step 3d: Installation (may trigger reboot)
     Write-Host "  [3/3] Running PSM installer (10-20 min, possible reboot)..." -ForegroundColor DarkGray
     $installResult = Invoke-LabVMPowerShell -VMXPath $psmVMX -GuestUser $guestUser `
         -GuestPassword $guestPass -NoThrow -ScriptBlock @"
@@ -260,7 +307,7 @@ $f = Get-ChildItem 'C:\LabSetup\Logs' -Filter 'error_*.log' -ErrorAction Silentl
      Sort-Object LastWriteTime | Select-Object -Last 1
 if ($f) { Write-Output $f.FullName } else { Write-Output '' }
 '@
-            $guestLog = $latestLog.Output.Trim()
+            $guestLog = "$($latestLog.StdOut)".Trim()
             if ($guestLog) {
                 $hostLog = "$dir\psm_installation_error_$ts.log"
                 Copy-FileFromLabVM -VMXPath $psmVMX -GuestPath $guestLog `
@@ -278,7 +325,7 @@ if ($f) { Write-Output $f.FullName } else { Write-Output '' }
     # ================================================================
     Write-Host "`n[Step 4] Running PSM post-reboot stages..." -ForegroundColor Yellow
 
-    # --- 4a: PostInstallation ---
+    # Step 4a: PostInstallation
     Write-Host "  [1/3] Running PostInstallation..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $psmVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "postinstall" -ScriptBlock @"
@@ -290,7 +337,7 @@ Write-Host '[OK] PostInstallation complete'
 "@
     Write-Host "  [1/3] PostInstallation complete" -ForegroundColor Green
 
-    # --- 4b: Hardening ---
+    # Step 4b: Hardening
     Write-Host "  [2/3] Applying security hardening..." -ForegroundColor DarkGray
     Invoke-LabVMPowerShell -VMXPath $psmVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -NoThrow -ScriptBlock @"
@@ -303,7 +350,7 @@ Write-Host '[OK] Hardening complete'
 "@ | Out-Null
     Write-Host "  [2/3] Hardening complete" -ForegroundColor Green
 
-    # --- 4c: Registration ---
+    # Step 4c: Registration
     Write-Host "  [3/3] Registering PSM with Vault..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $psmVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "registration" -ScriptBlock @"

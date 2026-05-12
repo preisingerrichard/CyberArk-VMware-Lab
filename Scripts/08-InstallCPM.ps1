@@ -91,7 +91,7 @@ $f = Get-ChildItem 'C:\LabSetup\Logs' -Filter 'error_*.log' -ErrorAction Silentl
      Sort-Object LastWriteTime | Select-Object -Last 1
 if ($f) { Write-Output $f.FullName } else { Write-Output '' }
 '@
-            $guestLog = $latestLog.Output.Trim()
+            $guestLog = "$($latestLog.StdOut)".Trim()
             if ($guestLog) {
                 Copy-FileFromLabVM -VMXPath $VMXPath -GuestPath $guestLog `
                     -HostPath $hostLog -GuestUser $GuestUser -GuestPassword $GuestPassword | Out-Null
@@ -161,17 +161,21 @@ if (-not (Test-Path $autoDir)) {
 }
 '@
 
-# --- Skip check ---
 Write-Host "  Checking for existing CPM installation..." -ForegroundColor DarkGray
-$skipCheck = Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser `
+$installState = Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser `
     -GuestPassword $guestPass -NoThrow -ScriptBlock @'
-if (Get-Service 'CyberArk Password Manager' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }
+$svc   = Get-Service 'CyberArk Password Manager' -ErrorAction SilentlyContinue
+$creds = Get-ChildItem 'C:\Program Files (x86)\CyberArk\Password Manager\Vault' -Filter '*Parm.ini' -ErrorAction SilentlyContinue
+if ($svc -and $creds)      { exit 0 }   # installed + registered
+if ($svc -and -not $creds) { exit 2 }   # installed, registration missing
+exit 1                                  # not installed
 '@
 
-if ($skipCheck.ExitCode -eq 0) {
-    Write-Host "  [SKIP] CPM service already present - skipping installation" -ForegroundColor Yellow
-} else {
-    # --- 2a: Patch registration config ---
+if ($installState.ExitCode -eq 0) {
+    Write-Host "  [SKIP] CPM fully installed and registered - skipping" -ForegroundColor Yellow
+} elseif ($installState.ExitCode -eq 2) {
+    Write-Host "  [INFO] CPM installed but not registered - running Registration + Hardening only" -ForegroundColor Yellow
+
     Write-Host "  [Setup] Patching registration config..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "setup" -ScriptBlock @"
@@ -201,31 +205,6 @@ if (Test-Path `$regConfig) {
 } else { Write-Warning "Registration config not found: `$regConfig" }
 "@
 
-    # --- 2b: Prerequisites ---
-    Write-Host "  [1/4] Installing CPM prerequisites (may take 5-10 min)..." -ForegroundColor DarkGray
-    Invoke-GuestStep -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
-        -Label "prerequisites" -ScriptBlock @"
-$findAutoDir
-Set-Location `$autoDir
-Write-Host 'Running CPM_PreInstallation.ps1...'
-& .\CPM_PreInstallation.ps1
-Write-Host '[OK] Prerequisites complete'
-"@
-    Write-Host "  [1/4] Prerequisites complete" -ForegroundColor Green
-
-    # --- 2c: CPM Installer ---
-    Write-Host "  [2/4] Running CPM installer (10-20 min, please wait)..." -ForegroundColor DarkGray
-    Invoke-GuestStep -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
-        -Label "installation" -ScriptBlock @"
-$findAutoDir
-Set-Location "`$autoDir\Installation"
-Write-Host 'Running CPMInstallation.ps1...'
-& .\CPMInstallation.ps1
-Write-Host '[OK] Installation complete'
-"@
-    Write-Host "  [2/4] Installation complete" -ForegroundColor Green
-
-    # --- 2d: Registration ---
     Write-Host "  [3/4] Registering CPM with Vault..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "registration" -ScriptBlock @"
@@ -237,7 +216,84 @@ Write-Host '[OK] Registration complete'
 "@
     Write-Host "  [3/4] Registration complete" -ForegroundColor Green
 
-    # --- 2e: Hardening ---
+    Write-Host "  [4/4] Applying security hardening..." -ForegroundColor DarkGray
+    Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -NoThrow -ScriptBlock @"
+$findAutoDir
+Set-Location `$autoDir
+Write-Host 'Running CPM_Hardening.ps1...'
+try { & .\CPM_Hardening.ps1 } catch { Write-Warning "Hardening non-fatal error: `$_" }
+Write-Host '[OK] Hardening complete'
+"@ | Out-Null
+    Write-Host "  [4/4] Hardening complete" -ForegroundColor Green
+} else {
+    # Step 2a: Patch registration config
+    Write-Host "  [Setup] Patching registration config..." -ForegroundColor DarkGray
+    Invoke-GuestStep -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "setup" -ScriptBlock @"
+$findAutoDir
+
+function Set-XmlParam (`$xmlPath, `$paramName, `$newValue) {
+    [xml]`$doc = Get-Content `$xmlPath -Raw
+    `$node = `$doc.SelectSingleNode("//*[@Name='`$paramName']")
+    if (-not `$node) {
+        `$node = `$doc.SelectNodes('//*') |
+            Where-Object { `$_.Attributes -and `$_.Attributes['Name'] -and
+                           `$_.Attributes['Name'].Value -ieq `$paramName } |
+            Select-Object -First 1
+    }
+    if (`$node) {
+        if (`$node.Attributes['Value']) { `$node.SetAttribute('Value', `$newValue) }
+        else { `$node.InnerText = `$newValue }
+        `$doc.Save(`$xmlPath)
+        Write-Host "  [OK] `$paramName = `$newValue"
+    } else { Write-Warning "  `$paramName not found in `$(Split-Path `$xmlPath -Leaf)" }
+}
+
+`$regConfig = "`$autoDir\Registration\CPMRegisterComponentConfig.xml"
+if (Test-Path `$regConfig) {
+    Set-XmlParam `$regConfig 'vaultip'   '$($CAConfig.Vault.VaultAddress)'
+    Set-XmlParam `$regConfig 'vaultUser' '$($CAConfig.Vault.AdminUser)'
+} else { Write-Warning "Registration config not found: `$regConfig" }
+"@
+
+    # Step 2b: Prerequisites
+    Write-Host "  [1/4] Installing CPM prerequisites (may take 5-10 min)..." -ForegroundColor DarkGray
+    Invoke-GuestStep -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "prerequisites" -ScriptBlock @"
+$findAutoDir
+Set-Location `$autoDir
+Write-Host 'Running CPM_PreInstallation.ps1...'
+& .\CPM_PreInstallation.ps1
+Write-Host '[OK] Prerequisites complete'
+"@
+    Write-Host "  [1/4] Prerequisites complete" -ForegroundColor Green
+
+    # Step 2c: CPM Installer
+    Write-Host "  [2/4] Running CPM installer (10-20 min, please wait)..." -ForegroundColor DarkGray
+    Invoke-GuestStep -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "installation" -ScriptBlock @"
+$findAutoDir
+Set-Location "`$autoDir\Installation"
+Write-Host 'Running CPMInstallation.ps1...'
+& .\CPMInstallation.ps1
+Write-Host '[OK] Installation complete'
+"@
+    Write-Host "  [2/4] Installation complete" -ForegroundColor Green
+
+    # Step 2d: Registration
+    Write-Host "  [3/4] Registering CPM with Vault..." -ForegroundColor DarkGray
+    Invoke-GuestStep -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "registration" -ScriptBlock @"
+$findAutoDir
+Set-Location "`$autoDir\Registration"
+Write-Host 'Running CPMRegisterCommponent.ps1...'
+& .\CPMRegisterCommponent.ps1 -pwd '$($CAConfig.Vault.AdminPassword)'
+Write-Host '[OK] Registration complete'
+"@
+    Write-Host "  [3/4] Registration complete" -ForegroundColor Green
+
+    # Step 2e: Hardening
     Write-Host "  [4/4] Applying security hardening..." -ForegroundColor DarkGray
     Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -NoThrow -ScriptBlock @"

@@ -66,7 +66,7 @@ New-Item -Path 'C:\LabSetup\Logs'           -ItemType Directory -Force | Out-Nul
 Write-Host 'Guest directories created'
 "@ -GuestUser $guestUser -GuestPassword $guestPass | Out-Null
 
-# --- Vault installer ---
+# Vault installer
 Write-Host "  Transferring Vault installer..." -ForegroundColor DarkGray
 $vaultZip = Join-Path $env:TEMP "VaultInstall_$(Get-Random).zip"
 try {
@@ -85,7 +85,7 @@ Remove-Item 'C:\Windows\Temp\VaultInstall.zip' -Force -ErrorAction SilentlyConti
 Write-Host "  Vault: `$((Get-ChildItem 'C:\CyberArkInstall\Vault' -Recurse -File).Count) files"
 "@ -GuestUser $guestUser -GuestPassword $guestPass | Out-Null
 
-# --- Client installer ---
+# Client installer
 Write-Host "  Transferring Client installer..." -ForegroundColor DarkGray
 $clientZip = Join-Path $env:TEMP "ClientInstall_$(Get-Random).zip"
 try {
@@ -104,7 +104,7 @@ Remove-Item 'C:\Windows\Temp\ClientInstall.zip' -Force -ErrorAction SilentlyCont
 Write-Host "  Client: `$((Get-ChildItem 'C:\CyberArkInstall\Client' -Recurse -File).Count) files"
 "@ -GuestUser $guestUser -GuestPassword $guestPass | Out-Null
 
-# --- Keys ---
+# Keys
 Write-Host "  Copying keys..." -ForegroundColor DarkGray
 Get-ChildItem $masterKeyHost -File | ForEach-Object {
     Copy-FileToLabVM -VMXPath $vaultVMX -HostPath $_.FullName `
@@ -117,7 +117,7 @@ Get-ChildItem $operatorKeyHost -File | ForEach-Object {
         -GuestUser $guestUser -GuestPassword $guestPass | Out-Null
 }
 
-# --- License ---
+# License
 if (Test-Path $licenseHost) {
     Copy-FileToLabVM -VMXPath $vaultVMX -HostPath $licenseHost `
         -GuestPath $CAConfig.Vault.Guest.LicenseFile `
@@ -126,7 +126,7 @@ if (Test-Path $licenseHost) {
     Write-Warning "License file not found at $licenseHost"
 }
 
-# --- ISS files (byte-for-byte) ---
+# ISS files (byte-for-byte)
 Write-Host "  Copying ISS files (byte-for-byte)..." -ForegroundColor DarkGray
 
 $vaultIssSource  = "$PSScriptRoot\..\Helpers\setup.iss"
@@ -205,7 +205,7 @@ $installBoth = @"
 `$ErrorActionPreference = 'Continue'
 Start-Transcript -Path 'C:\LabSetup\Logs\vault_install_transcript.log' -Force | Out-Null
 
-# --- Vault Server ---
+# Vault Server
 Write-Host 'Installing Vault Server...' -ForegroundColor Cyan
 Set-Location 'C:\CyberArkInstall\Vault'
 
@@ -244,7 +244,7 @@ if (`$vaultService) {
     }
 }
 
-# --- PrivateArk Client ---
+# PrivateArk Client
 Write-Host 'Installing PrivateArk Client...' -ForegroundColor Cyan
 Set-Location 'C:\CyberArkInstall\Client'
 

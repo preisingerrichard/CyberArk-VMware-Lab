@@ -92,7 +92,7 @@ $f = Get-ChildItem 'C:\LabSetup\Logs' -Filter 'error_*.log' -ErrorAction Silentl
      Sort-Object LastWriteTime | Select-Object -Last 1
 if ($f) { Write-Output $f.FullName } else { Write-Output '' }
 '@
-            $guestLog = $latestLog.Output.Trim()
+            $guestLog = "$($latestLog.StdOut)".Trim()
             if ($guestLog) {
                 Copy-FileFromLabVM -VMXPath $VMXPath -GuestPath $guestLog `
                     -HostPath $hostLog -GuestUser $GuestUser -GuestPassword $GuestPassword | Out-Null
@@ -164,17 +164,21 @@ if (-not (Test-Path $autoDir)) {
 
 # Invoke-GuestStep is defined in Step 1 above and reused here
 
-# --- Skip check ---
 Write-Host "  Checking for existing PVWA installation..." -ForegroundColor DarkGray
-$skipCheck = Invoke-LabVMPowerShell -VMXPath $pvwaVMX -GuestUser $guestUser `
+$installState = Invoke-LabVMPowerShell -VMXPath $pvwaVMX -GuestUser $guestUser `
     -GuestPassword $guestPass -NoThrow -ScriptBlock @'
-if (Get-Service 'CyberArk Scheduled Tasks' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }
+$svc   = Get-Service 'CyberArk Scheduled Tasks' -ErrorAction SilentlyContinue
+$creds = Get-ChildItem 'C:\CyberArk\Password Vault Web Access\Vault' -Filter '*Parm.ini' -ErrorAction SilentlyContinue
+if ($svc -and $creds)      { exit 0 }   # installed + registered
+if ($svc -and -not $creds) { exit 2 }   # installed, registration missing
+exit 1                                  # not installed
 '@
 
-if ($skipCheck.ExitCode -eq 0) {
-    Write-Host "  [SKIP] PVWA service already present - skipping installation" -ForegroundColor Yellow
-} else {
-    # --- 2a: Prepare log dir and patch registration config ---
+if ($installState.ExitCode -eq 0) {
+    Write-Host "  [SKIP] PVWA fully installed and registered - skipping" -ForegroundColor Yellow
+} elseif ($installState.ExitCode -eq 2) {
+    Write-Host "  [INFO] PVWA installed but not registered - running Registration + Hardening only" -ForegroundColor Yellow
+
     Write-Host "  [Setup] Patching registration config..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "setup" -ScriptBlock @"
@@ -204,31 +208,6 @@ if (Test-Path `$regConfig) {
 } else { Write-Warning "Registration config not found: `$regConfig" }
 "@
 
-    # --- 2b: Prerequisites (IIS, .NET, Windows features) ---
-    Write-Host "  [1/4] Installing IIS, .NET and Windows prerequisites (may take 5-10 min)..." -ForegroundColor DarkGray
-    Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
-        -Label "prerequisites" -ScriptBlock @"
-$findAutoDir
-Set-Location `$autoDir
-Write-Host 'Running PVWA_Prerequisites.ps1...'
-& .\PVWA_Prerequisites.ps1
-Write-Host '[OK] Prerequisites complete'
-"@
-    Write-Host "  [1/4] Prerequisites complete" -ForegroundColor Green
-
-    # --- 2c: PVWA Installer ---
-    Write-Host "  [2/4] Running PVWA installer (10-20 min, please wait)..." -ForegroundColor DarkGray
-    Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
-        -Label "installation" -ScriptBlock @"
-$findAutoDir
-Set-Location "`$autoDir\Installation"
-Write-Host 'Running PVWAInstallation.ps1...'
-& .\PVWAInstallation.ps1
-Write-Host '[OK] Installation complete'
-"@
-    Write-Host "  [2/4] Installation complete" -ForegroundColor Green
-
-    # --- 2d: Registration ---
     Write-Host "  [3/4] Registering PVWA with Vault..." -ForegroundColor DarkGray
     Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
         -Label "registration" -ScriptBlock @"
@@ -240,7 +219,106 @@ Write-Host '[OK] Registration complete'
 "@
     Write-Host "  [3/4] Registration complete" -ForegroundColor Green
 
-    # --- 2e: Hardening ---
+    # PVWA_Hardening.ps1 restarts the HTTP kernel driver, which can deadlock if IIS
+    # dependents are still running. Pre-stop W3SVC/WAS, then run hardening in a
+    # background job with a 120-second timeout so a stuck HTTP stop cannot hang deploy.
+    Write-Host "  [4/4] Applying security hardening (IIS header suppression, TLS, etc.)..." -ForegroundColor DarkGray
+    Invoke-LabVMPowerShell -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -NoThrow -ScriptBlock @"
+$findAutoDir
+
+Write-Host 'Stopping IIS services before hardening...'
+Stop-Service W3SVC, WAS -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
+
+Write-Host 'Running PVWA_Hardening.ps1 (timeout: 120 s)...'
+`$job = Start-Job -ScriptBlock {
+    param(`$dir)
+    Set-Location `$dir
+    & .\PVWA_Hardening.ps1
+} -ArgumentList `$autoDir
+
+`$done = `$job | Wait-Job -Timeout 120
+if (-not `$done) {
+    Stop-Job `$job -ErrorAction SilentlyContinue
+    Write-Warning 'Hardening timed out waiting for HTTP service to stop - continuing. HTTP will settle on next reboot.'
+} else {
+    Receive-Job `$job
+}
+Remove-Job `$job -Force -ErrorAction SilentlyContinue
+
+Write-Host 'Restarting IIS...'
+Start-Service W3SVC -ErrorAction SilentlyContinue
+Write-Host '[OK] Hardening complete'
+"@ | Out-Null
+    Write-Host "  [4/4] Hardening complete" -ForegroundColor Green
+} else {
+    # Step 2a: Patch registration config
+    Write-Host "  [Setup] Patching registration config..." -ForegroundColor DarkGray
+    Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "setup" -ScriptBlock @"
+$findAutoDir
+
+function Set-XmlParam (`$xmlPath, `$paramName, `$newValue) {
+    [xml]`$doc = Get-Content `$xmlPath -Raw
+    `$node = `$doc.SelectSingleNode("//*[@Name='`$paramName']")
+    if (-not `$node) {
+        `$node = `$doc.SelectNodes('//*') |
+            Where-Object { `$_.Attributes -and `$_.Attributes['Name'] -and
+                           `$_.Attributes['Name'].Value -ieq `$paramName } |
+            Select-Object -First 1
+    }
+    if (`$node) {
+        if (`$node.Attributes['Value']) { `$node.SetAttribute('Value', `$newValue) }
+        else { `$node.InnerText = `$newValue }
+        `$doc.Save(`$xmlPath)
+        Write-Host "  [OK] `$paramName = `$newValue"
+    } else { Write-Warning "  `$paramName not found in `$(Split-Path `$xmlPath -Leaf)" }
+}
+
+`$regConfig = "`$autoDir\Registration\PVWARegisterComponentConfig.xml"
+if (Test-Path `$regConfig) {
+    Set-XmlParam `$regConfig 'vaultip'   '$($CAConfig.Vault.VaultAddress)'
+    Set-XmlParam `$regConfig 'vaultuser' '$($CAConfig.Vault.AdminUser)'
+} else { Write-Warning "Registration config not found: `$regConfig" }
+"@
+
+    # Step 2b: Prerequisites (IIS, .NET, Windows features)
+    Write-Host "  [1/4] Installing IIS, .NET and Windows prerequisites (may take 5-10 min)..." -ForegroundColor DarkGray
+    Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "prerequisites" -ScriptBlock @"
+$findAutoDir
+Set-Location `$autoDir
+Write-Host 'Running PVWA_Prerequisites.ps1...'
+& .\PVWA_Prerequisites.ps1
+Write-Host '[OK] Prerequisites complete'
+"@
+    Write-Host "  [1/4] Prerequisites complete" -ForegroundColor Green
+
+    Write-Host "  [2/4] Running PVWA installer (10-20 min, please wait)..." -ForegroundColor DarkGray
+    Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "installation" -ScriptBlock @"
+$findAutoDir
+Set-Location "`$autoDir\Installation"
+Write-Host 'Running PVWAInstallation.ps1...'
+& .\PVWAInstallation.ps1
+Write-Host '[OK] Installation complete'
+"@
+    Write-Host "  [2/4] Installation complete" -ForegroundColor Green
+
+    # Step 2d: Registration
+    Write-Host "  [3/4] Registering PVWA with Vault..." -ForegroundColor DarkGray
+    Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
+        -Label "registration" -ScriptBlock @"
+$findAutoDir
+Set-Location "`$autoDir\Registration"
+Write-Host 'Running PVWARegisterComponent.ps1...'
+& .\PVWARegisterComponent.ps1 -pwd '$($CAConfig.Vault.AdminPassword)'
+Write-Host '[OK] Registration complete'
+"@
+    Write-Host "  [3/4] Registration complete" -ForegroundColor Green
+
+    # Step 2e: Hardening
     # PVWA_Hardening.ps1 restarts the HTTP kernel driver, which can deadlock if IIS
     # dependents are still running. Pre-stop W3SVC/WAS, then run hardening in a
     # background job with a 120-second timeout so a stuck HTTP stop cannot hang deploy.
@@ -324,6 +402,17 @@ try {
     Write-Warning "Could not create desktop shortcut: $_"
 }
 
+
+# Create shortcut on COMP01 guest desktop (Public Desktop = visible to all users)
+Invoke-GuestStep -VMXPath $pvwaVMX -GuestUser $guestUser -GuestPassword $guestPass `
+    -Label "desktop-shortcut" -ScriptBlock @"
+`$url  = 'https://comp01.$($Config.Domain.Name)/PasswordVault/v10/logon/cyberark'
+`$path = 'C:\Users\Public\Desktop\PVWA - CyberArk Lab.url'
+`$ini  = "[InternetShortcut]`r`nURL=`$url`r`n"
+[System.IO.File]::WriteAllText(`$path, `$ini, [System.Text.Encoding]::UTF8)
+Write-Host "Shortcut created: `$path"
+"@
+Write-Host "  [OK] PVWA shortcut on COMP01 Public Desktop" -ForegroundColor Green
 
 Write-Host "`n$("=" * 60)" -ForegroundColor Green
 Write-Host "PVWA installation complete on $($pvwaVM.Name)" -ForegroundColor Green
