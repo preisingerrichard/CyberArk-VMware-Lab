@@ -1,20 +1,24 @@
 # CyberArk Self-Hosted Lab — VMware Workstation
 
-Automated deployment of a full CyberArk self-hosted environment on VMware Workstation Pro using PowerShell. Builds three Windows Server 2022 VMs from scratch, promotes a domain controller, and installs Vault, PVWA, CPM, and PSM — all unattended.
+Automated deployment of a full CyberArk self-hosted environment on VMware Workstation Pro using PowerShell. Builds Windows Server 2022 and Rocky Linux 9 VMs from scratch, promotes a domain controller, and installs Vault, PVWA, CPM, PSM, PTA, and PSMP — all unattended.
 
 ---
 
 ## Architecture
 
-| VM | Role | IP | RAM | Disk |
-|---|---|---|---|---|
-| DC01 | Active Directory / DNS | 192.168.100.10 | 4 GB | 30 GB |
-| VAULT01 | CyberArk Vault Server | 192.168.100.20 | 4 GB | 30 GB |
-| COMP01 | PVWA + CPM + PSM | 192.168.100.30 | 8 GB | 60 GB |
+| VM | Role | IP | RAM | Disk | OS |
+|---|---|---|---|---|---|
+| DC01 | Active Directory / DNS | 192.168.100.10 | 4 GB | 30 GB | Windows Server 2022 |
+| VAULT01 | CyberArk Vault Server | 192.168.100.20 | 4 GB | 30 GB | Windows Server 2022 |
+| COMP01 | PVWA + CPM + PSM | 192.168.100.30 | 8 GB | 60 GB | Windows Server 2022 |
+| PTA01 | Privileged Threat Analytics | 192.168.100.40 | 8 GB | 60 GB | Rocky Linux 9 |
+| PSMP01 | PSM for SSH Proxy | 192.168.100.50 | 4 GB | 40 GB | Rocky Linux 9 |
 
 **Network:** VMnet8 (NAT), subnet `192.168.100.0/24`  
 **Domain:** `cyberark.lab`  
 **PVWA:** `https://comp01.cyberark.lab/PasswordVault/v10/logon/cyberark`
+
+> PTA01 and PSMP01 are optional. The base lab (DC01 + VAULT01 + COMP01) deploys without them.
 
 ---
 
@@ -30,6 +34,8 @@ Automated deployment of a full CyberArk self-hosted environment on VMware Workst
   Download the **64-bit ISO** edition. Place it at:  
   `X:\VMWare\CyberArk-VMware-Lab\ISO\SERVER_EVAL_x64FRE_en-us.iso`  
   *(path is configurable in `Config\LabConfig.psd1`)*
+- **Rocky Linux 9 minimal ISO** — required for PTA01 and PSMP01 only:  
+  `X:\VMWare\CyberArk-VMware-Lab\ISO\Rocky-9.7-x86_64-minimal.iso`
 
 ### CyberArk Installation Files
 
@@ -122,6 +128,13 @@ Installers\
 │       ├── Hardening\
 │       └── Registration\
 │           └── RegistrationConfig.xml
+├── PTA\                           # Privileged Threat Analytics (optional)
+│   ├── pta_installer.sh
+│   ├── pta-<version>.tgz
+│   ├── pta-selinux-policy-<version>.el9.noarch.rpm
+│   └── sshpass-<version>.el9.x86_64.rpm
+├── PSMP\                          # PSM for SSH Proxy (optional)
+│   └── ...
 ├── keys\
 │   ├── master\                    # recprv.key, recpub.key, rndbase.dat, server.key
 │   └── operator\                  # recpub.key, rndbase.dat, server.key
@@ -173,10 +186,16 @@ CyberArk-specific settings — Vault address, admin credentials, component insta
 
 ## Deployment
 
-### Full deployment (all steps)
+### Base lab (Vault + PVWA + CPM + PSM)
 
 ```powershell
 .\Deploy-Lab.ps1
+```
+
+### Full lab including PTA and PSMP
+
+```powershell
+.\Deploy-Lab.ps1 -Steps Full
 ```
 
 ### Individual steps
@@ -190,6 +209,8 @@ CyberArk-specific settings — Vault address, admin credentials, component insta
 .\Deploy-Lab.ps1 -Steps PVWAInstall
 .\Deploy-Lab.ps1 -Steps CPMInstall
 .\Deploy-Lab.ps1 -Steps PSMInstall
+.\Deploy-Lab.ps1 -Steps CreatePTAVM, PTAInstall
+.\Deploy-Lab.ps1 -Steps CreatePSMPVM, PSMPInstall
 ```
 
 Multiple steps can be combined:
@@ -220,8 +241,8 @@ Multiple steps can be combined:
 - Reboots automatically
 
 ### `Scripts\05-DomainJoin.ps1` — Domain Join
-- Joins VAULT01 and COMP01 to `cyberark.lab`
-- Reboots each VM after joining
+- Joins COMP01 to `cyberark.lab` (VAULT01 stays standalone — Vault must not be domain-joined)
+- Reboots after joining
 
 ### `Scripts\06-InstallVault.ps1` — CyberArk Vault
 - Copies Vault installer, keys, and license file to VAULT01
@@ -251,6 +272,45 @@ Multiple steps can be combined:
 - Transfers and extracts the PSM installer to COMP01
 - Pre-reboot stages: Readiness check → Prerequisites → Installation (may trigger another reboot)
 - Post-reboot stages: PostInstallation → Hardening → Registration with Vault
+
+### `Scripts\10-CreatePTAVM.ps1` — Create PTA01 VM
+- Creates a Rocky Linux 9 VM (PTA01) using a kickstart-based unattended install
+- Configures static IP `192.168.100.40`, SSH key pair for automation
+
+### `Scripts\11-InstallPTA.ps1` — Install PTA
+- Copies PTA installer files to PTA01 via SCP
+- Runs the PTA installer and post-install configuration wizard
+- Registers PTA with Vault and PVWA
+- Imports PVWA SSL cert into PTA's JVM cacerts (required for PTA → PVWA HTTPS)
+- Imports PTA SSL cert into COMP01's Trusted Root store (required for PVWA → PTA HTTPS)
+- Deploys DiamondWebApp (PTA web UI)
+
+### `Scripts\12-CreatePSMPVM.ps1` — Create PSMP01 VM
+- Creates a Rocky Linux 9 VM (PSMP01) using a kickstart-based unattended install
+- Configures static IP `192.168.100.50`, SSH key pair for automation
+
+### `Scripts\13-InstallPSMP.ps1` — Install PSMP
+- Copies PSMP installer to PSMP01 via SCP
+- Installs PSMP and registers it with Vault
+
+---
+
+## Post-Deployment Steps
+
+### PTA — SSL Certificate Trust (lab only)
+
+PTA uses a self-signed certificate. By default, PVWA validates the PTA certificate before displaying security events, which fails with self-signed certs and shows **CAWS00001E**.
+
+For a lab environment, disable certificate validation in PVWA:
+
+1. Log in to PVWA as Administrator
+2. Go to **Administration → Options → General**
+3. Set **SecurityModuleTrustedConnectionEnabled** = `No`
+4. Click **Apply**
+
+PTA security events will load immediately after this change.
+
+> In a production environment, install a CA-signed certificate on PTA using `/opt/pta/utility/run.sh` option 15, then import the CA root certificate into COMP01's Trusted Root store instead of disabling validation.
 
 ---
 
@@ -284,6 +344,7 @@ Get-ChildItem "F:\VMs\CyberArk" -Recurse -Filter "*.lck" | Remove-Item -Recurse 
 |---|---|
 | PVWA | `https://comp01.cyberark.lab/PasswordVault/v10/logon/cyberark` |
 | Vault | `192.168.100.20:1858` |
+| PTA | `https://192.168.100.40:8443` |
 | Domain | `cyberark.lab` |
 | Admin user | `CYBERARKLAB\Administrator` |
 
@@ -315,6 +376,10 @@ CyberArk-VMware-Lab\
 │   ├── 07-InstallPVWA.ps1
 │   ├── 08-InstallCPM.ps1
 │   ├── 09-InstallPSM.ps1
+│   ├── 10-CreatePTAVM.ps1
+│   ├── 11-InstallPTA.ps1
+│   ├── 12-CreatePSMPVM.ps1
+│   ├── 13-InstallPSMP.ps1
 │   └── Teardown.ps1
 ├── Templates\
 │   └── unattend-base.xml       # Windows unattended install template
@@ -326,7 +391,8 @@ CyberArk-VMware-Lab\
 
 ## Notes
 
-- **Deployment time:** ~2–3 hours end-to-end on an SSD
-- **Host RAM:** 16 GB minimum recommended (VMs use ~16 GB combined when all running)
+- **Deployment time:** ~2–3 hours for base lab; ~3–4 hours for full lab including PTA and PSMP
+- **Host RAM:** 16 GB minimum for base lab; 32 GB recommended for full lab (all VMs use ~28 GB combined when running)
 - **Re-runnable:** Every script checks for existing state and skips completed steps, so individual scripts are safe to re-run after a partial failure
 - **CyberArk version:** Tested with CyberArk v14/v15 component packages
+- **VMnet8 subnet:** Must be configured as `192.168.100.0/24` in VMware Virtual Network Editor before deployment. Without this, the host cannot reach guest VMs over TCP.

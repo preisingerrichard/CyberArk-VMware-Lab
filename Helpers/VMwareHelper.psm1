@@ -455,6 +455,49 @@ function Copy-FileToLabVM {
     )
 }
 
+function Invoke-LinuxGuestScript {
+    <#
+    .SYNOPSIS
+        Execute a bash script inside a Linux guest VM via vmrun guest operations.
+        Requires open-vm-tools to be installed on the guest.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$VMXPath,
+        [Parameter(Mandatory)][string]$ScriptText,
+        [Parameter(Mandatory)][string]$GuestUser,
+        [Parameter(Mandatory)][string]$GuestPassword,
+        [switch]$NoThrow,
+        [int]$TimeoutSeconds = 3600
+    )
+
+    $tempHostPath  = [System.IO.Path]::Combine($env:TEMP, "labscript_$(Get-Random).sh")
+    $tempGuestPath = "/tmp/labscript_$(Get-Random).sh"
+
+    # Linux requires LF line endings
+    $lfContent = $ScriptText -replace "`r`n", "`n" -replace "`r", "`n"
+    [System.IO.File]::WriteAllText($tempHostPath, $lfContent, [System.Text.Encoding]::UTF8)
+
+    try {
+        Invoke-VMRun -Arguments @(
+            "-gu", $GuestUser, "-gp", $GuestPassword,
+            "copyFileFromHostToGuest", "`"$VMXPath`"",
+            "`"$tempHostPath`"", "`"$tempGuestPath`""
+        ) | Out-Null
+
+        # chmod+x then execute in a single shell invocation
+        $result = Invoke-VMRun -Arguments @(
+            "-gu", $GuestUser, "-gp", $GuestPassword,
+            "runProgramInGuest", "`"$VMXPath`"",
+            "/bin/bash", "-c", "chmod +x $tempGuestPath && $tempGuestPath ; echo \$? > ${tempGuestPath}.rc"
+        ) -TimeoutSeconds $TimeoutSeconds -NoThrow
+
+        return $result
+    } finally {
+        Remove-Item $tempHostPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Copy-FileFromLabVM {
     [CmdletBinding()]
     param(

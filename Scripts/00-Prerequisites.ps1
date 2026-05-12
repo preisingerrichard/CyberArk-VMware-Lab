@@ -18,10 +18,10 @@ Write-Host "CyberArk Lab - Prerequisites Check" -ForegroundColor Cyan
 Write-Host ("=" * 60) -ForegroundColor Cyan
 Write-Host ""
 
-# ---------------------------------------------------------------------------
-# 1. VMware Workstation
-# ---------------------------------------------------------------------------
-Write-Host "[1] VMware Workstation Pro..." -NoNewline
+# ================================================================
+# Step 1: VMware Workstation Pro
+# ================================================================
+Write-Host "[Step 1] VMware Workstation Pro..." -NoNewline
 
 $vmrunPath = $Config.VMware.VMRunPath
 if (Test-Path $vmrunPath) {
@@ -37,10 +37,10 @@ if (Test-Path $vmrunPath) {
     $checks += @{ Check = "VMware"; Status = "FAILED" }
 }
 
-# ---------------------------------------------------------------------------
-# 2. Windows Server ISO
-# ---------------------------------------------------------------------------
-Write-Host "[2] Windows Server ISO..." -NoNewline
+# ================================================================
+# Step 2: Windows Server ISO
+# ================================================================
+Write-Host "[Step 2] Windows Server ISO..." -NoNewline
 
 $isoPath = $Config.ISOs.WindowsServer
 if (Test-Path $isoPath) {
@@ -54,10 +54,10 @@ if (Test-Path $isoPath) {
     $checks += @{ Check = "WindowsISO"; Status = "FAILED" }
 }
 
-# ---------------------------------------------------------------------------
-# 3. CyberArk Installation Media (folder-based, NOT ISO)
-# ---------------------------------------------------------------------------
-Write-Host "[3] CyberArk Installation Media (v15.0 folders)..." -NoNewline
+# ================================================================
+# Step 3: CyberArk Installation Media
+# ================================================================
+Write-Host "[Step 3] CyberArk Installation Media (v15.0 folders)..." -NoNewline
 $cyberArkPath = $Config.CyberArkMedia.BasePath
 
 if (Test-Path $cyberArkPath) {
@@ -191,10 +191,10 @@ if (Test-Path $cyberArkPath) {
     $checks += @{ Check = "CyberArkMedia"; Status = "FAILED" }
 }
 
-# ---------------------------------------------------------------------------
-# 4. VM Folder
-# ---------------------------------------------------------------------------
-Write-Host "`n[4] VM Storage folder..." -NoNewline
+# ================================================================
+# Step 4: VM Storage folder
+# ================================================================
+Write-Host "`n[Step 4] VM Storage folder..." -NoNewline
 
 $vmFolder = $Config.VMware.DefaultVMFolder
 if (-not (Test-Path $vmFolder)) {
@@ -219,9 +219,9 @@ if ($disk) {
     $checks += @{ Check = "DiskSpace"; Status = "OK" }
 }
 
-# ---------------------------------------------------------------------------
+# ================================================================
 # Summary
-# ---------------------------------------------------------------------------
+# ================================================================
 Write-Host ""
 Write-Host ("=" * 60) -ForegroundColor Cyan
 Write-Host "  Prerequisites Summary" -ForegroundColor Cyan

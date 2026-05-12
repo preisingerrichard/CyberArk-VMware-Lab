@@ -27,7 +27,9 @@ Write-Host "=" * 60 -ForegroundColor Cyan
 $user = $Config.LocalAdmin.Username
 $pass = $Config.LocalAdmin.Password
 
-# --- Step 1: Install AD DS Role ---
+# ================================================================
+# Step 1: Install AD DS Role
+# ================================================================
 Write-Host "`n[Step 1] Installing AD DS Role..." -ForegroundColor Yellow
 
 $installADDS = @"
@@ -40,7 +42,9 @@ Invoke-LabVMPowerShell -VMXPath $dcVMX -ScriptBlock $installADDS `
 
 Start-Sleep -Seconds 15
 
-# --- Step 2: Promote to Domain Controller ---
+# ================================================================
+# Step 2: Promote to Domain Controller
+# ================================================================
 Write-Host "`n[Step 2] Promoting to Domain Controller..." -ForegroundColor Yellow
 
 $promoteDC = @"
@@ -72,7 +76,9 @@ Wait-LabVMReady -VMXPath $dcVMX -TimeoutSeconds 600
 Start-Sleep -Seconds 120
 Write-Host "DC promotion complete. Waiting for AD services..." -ForegroundColor Cyan
 
-# --- Step 3: Post-DC Configuration ---
+# ================================================================
+# Step 3: Post-DC configuration (OUs, service accounts, DNS, CA)
+# ================================================================
 Write-Host "`n[Step 3] Post-DC Configuration..." -ForegroundColor Yellow
 
 # Use local format for authentication initially, then retry with domain format if needed
@@ -150,9 +156,6 @@ Install-AdcsCertificationAuthority ``
     -Force
 
 Write-Host "Enterprise CA installed"
-
-# Configure Certificate Auto-Enrollment GPO
-# (Simplified - in production you'd use proper GPO cmdlets)
 
 Write-Host "DC post-configuration complete!"
 "@

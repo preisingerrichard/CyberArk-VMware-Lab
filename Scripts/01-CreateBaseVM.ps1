@@ -21,9 +21,9 @@ Write-Host ("=" * 60) -ForegroundColor Cyan
 Write-Host "Creating Base Template VM: $templateName" -ForegroundColor Cyan
 Write-Host ("=" * 60) -ForegroundColor Cyan
 
-# ---------------------------------------------------------------------------
+# ================================================================
 # Helper: create a small ISO from a folder using IMAPI2 (no oscdimg needed)
-# ---------------------------------------------------------------------------
+# ================================================================
 function New-IsoFromFolder {
     param(
         [string]$SourceFolder,
@@ -255,9 +255,9 @@ function Get-LabVmIpFromDhcpLease {
     return $latestIp
 }
 
-# ---------------------------------------------------------------------------
+# ================================================================
 # Resolve paths up front so early-exit and ISO-skip checks can use them
-# ---------------------------------------------------------------------------
+# ================================================================
 $templateFolder    = $Config.VMware.TemplateFolder
 $templateVMXFolder = Join-Path $Config.VMware.DefaultVMFolder $templateName
 $templateVMX       = Join-Path $templateVMXFolder "$templateName.vmx"
@@ -273,11 +273,11 @@ if (Test-Path $templateVMX) {
     }
 }
 
-# ---------------------------------------------------------------------------
+# ================================================================
 # Step 1: Build autounattend ISO
 # Skip if the VM folder already exists - the ISO is already built and likely
 # mounted in the running VM (rebuilding it would hit a file-lock error).
-# ---------------------------------------------------------------------------
+# ================================================================
 Write-Host "`n[Step 1] Building autounattend ISO..." -ForegroundColor Yellow
 
 $isoSourceDir = Join-Path $templateFolder "unattend_iso"
@@ -497,9 +497,9 @@ if ($needIsoBuild) {
     Write-Host "  Autounattend ISO already matches the current template files." -ForegroundColor DarkGray
 }
 
-# ---------------------------------------------------------------------------
+# ================================================================
 # Step 2: Create the VM (no-op if folder already exists)
-# ---------------------------------------------------------------------------
+# ================================================================
 Write-Host "`n[Step 2] Creating template VM..." -ForegroundColor Yellow
 
 if (-not (Test-Path $templateVMXFolder)) {
@@ -594,9 +594,9 @@ if ($vmxChanged) {
     [System.IO.File]::WriteAllLines($templateVMX, $vmxLines, [System.Text.Encoding]::UTF8)
 }
 
-# ---------------------------------------------------------------------------
+# ================================================================
 # Step 3: Start VM - Windows installs fully unattended
-# ---------------------------------------------------------------------------
+# ================================================================
 Write-Host "`n[Step 3] Starting VM for unattended Windows installation..." -ForegroundColor Yellow
 Write-Host "  Windows will install automatically (15-30 min)." -ForegroundColor DarkGray
 Write-Host "  VMware Tools will be installed from the host after WinRM becomes available." -ForegroundColor DarkGray
@@ -654,9 +654,9 @@ Wait-LabVMReady -VMXPath $templateVMX `
 
 Write-Host "`nWindows installation and VMware Tools setup complete!" -ForegroundColor Green
 
-# ---------------------------------------------------------------------------
+# ================================================================
 # Step 4: Post-install hardening and lab prep
-# ---------------------------------------------------------------------------
+# ================================================================
 Write-Host "`n[Step 4] Configuring template..." -ForegroundColor Yellow
 
 $postInstallScript = @'
@@ -701,9 +701,9 @@ Write-Host "Template configuration complete"
 Invoke-LabVMPowerShell -VMXPath $templateVMX -ScriptBlock $postInstallScript `
     -GuestUser $Config.LocalAdmin.Username -GuestPassword $Config.LocalAdmin.Password
 
-# ---------------------------------------------------------------------------
+# ================================================================
 # Step 5: Shutdown, disconnect ISOs, snapshot
-# ---------------------------------------------------------------------------
+# ================================================================
 Write-Host "`n[Step 5] Creating CleanInstall snapshot..." -ForegroundColor Yellow
 
 Stop-LabVM -VMXPath $templateVMX

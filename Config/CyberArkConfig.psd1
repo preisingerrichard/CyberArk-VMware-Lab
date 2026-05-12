@@ -34,7 +34,7 @@
     PVWA = @{
         ServiceUser     = "CyberArk-PVWA"
         ServicePassword = "PVWA!S3rv1ce2024"
-        InstallPath     = "C:\CyberArk\PVWA"
+        InstallPath     = "C:\CyberArk\Password Vault Web Access"   # matches InstallationConfig.xml PVWAInstallDirectory
         WebAppName      = "PasswordVault"
         IISPort         = 443
         Guest = @{
@@ -51,6 +51,19 @@
             InstallFolder = "C:\LabSetup\PSM"
             LogFile       = "C:\LabSetup\Logs\psm_install.log"
         }
+    }
+
+    PSMP = @{
+        GuestInstallDir = "/tmp/psmp-install"
+    }
+
+    PTA = @{
+        APIPort         = 8443
+        InitialPassword = "DiamondAdmin123!"  # CyberArk-hardcoded prepwiz default (see community.cyberark.com/s/article/What-is-the-root-password-for-the-PTA-image)
+        AdminPassword   = "Cyberark1!"     # new password configured via API
+        Timezone        = "UTC"
+        DaysActivity    = 180
+        GuestInstallDir = "/tmp/pta-install"
     }
 
     ServiceAccounts = @{

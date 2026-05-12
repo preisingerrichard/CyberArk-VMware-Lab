@@ -13,6 +13,15 @@ ISO/
 # ── Runtime state (generated during deployment) ──────────────────
 Config/DeployedVMs.xml
 
+# ── SSH keys (generated per-VM, machine-specific) ────────────────
+Config/pta_lab_key
+Config/pta_lab_key.pub
+Config/psmp_lab_key
+Config/psmp_lab_key.pub
+
+# ── Windows null device (ssh.exe UserKnownHostsFile=NUL artifact) ─
+NUL
+
 # ── Deployment logs ──────────────────────────────────────────────
 Logs/
 

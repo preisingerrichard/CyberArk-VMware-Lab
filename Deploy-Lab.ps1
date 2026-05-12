@@ -6,24 +6,68 @@
 .PARAMETER Steps
     Specify which steps to run. Default: All
 .EXAMPLE
-    .\Deploy-Lab.ps1
+    .\Deploy-Lab.ps1 -Steps Full          # Everything: base lab + PTA + PSMP
+    .\Deploy-Lab.ps1                      # Base lab only (no PTA/PSMP)
     .\Deploy-Lab.ps1 -Steps Prerequisites,BaseVM,DeployVMs
-    .\Deploy-Lab.ps1 -Steps VaultInstall -SkipSnapshots
+    .\Deploy-Lab.ps1 -Help                # List all steps and examples
 #>
 
 [CmdletBinding()]
 param(
     [ValidateSet(
-        "All", "Prerequisites", "BaseVM", "DeployVMs", "DomainController",
+        "All", "Full", "Prerequisites", "BaseVM", "DeployVMs", "DomainController",
         "DomainJoin", "VaultInstall", "PVWAInstall", "CPMInstall",
-        "PSMInstall"
+        "PSMInstall", "CreatePTAVM", "PTAInstall", "CreatePSMPVM", "PSMPInstall"
     )]
     [string[]]$Steps = @("All"),
 
-    [switch]$SkipSnapshots,
     [switch]$NoGUI,
+    [switch]$Help,
     [string]$ConfigPath = "$PSScriptRoot\Config\LabConfig.psd1"
 )
+
+if ($Help) {
+    Write-Host ""
+    Write-Host "Deploy-Lab.ps1 - CyberArk Lab Deployment" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "AVAILABLE STEPS" -ForegroundColor Yellow
+    Write-Host ""
+    $stepInfo = [ordered]@{
+        "All"              = "Base lab: Prerequisites through PSMInstall (no PTA/PSMP)"
+        "Full"             = "Everything: base lab + PTA + PSMP in one command"
+        "Prerequisites"    = "Verify host requirements (vmrun.exe, ISOs, installer media)"
+        "BaseVM"           = "Create Windows Server 2022 template VM (sysprepped, snapshotted)"
+        "DeployVMs"        = "Clone DC01, VAULT01, COMP01 from template; set IPs, hostnames, WinRM"
+        "DomainController" = "Promote DC01: AD DS, DNS zone cyberark.lab"
+        "DomainJoin"       = "Join COMP01 to domain (VAULT01 stays standalone)"
+        "VaultInstall"     = "Install CyberArk Vault on VAULT01"
+        "PVWAInstall"      = "Install PVWA on COMP01 (IIS, installer, register with Vault)"
+        "CPMInstall"       = "Install CPM on COMP01 (register with Vault)"
+        "PSMInstall"       = "Install PSM on COMP01 (register with Vault)"
+        "CreatePTAVM"      = "Create PTA01 Rocky Linux 9 VM via kickstart"
+        "PTAInstall"       = "Install and configure PTA on PTA01"
+        "CreatePSMPVM"     = "Create PSMP01 Rocky Linux 9 VM via kickstart"
+        "PSMPInstall"      = "Install and configure PSMP on PSMP01"
+    }
+    $w = ($stepInfo.Keys | Measure-Object Length -Maximum).Maximum + 2
+    foreach ($s in $stepInfo.Keys) {
+        $highlight = if ($s -in 'All','Full') { 'Cyan' } else { 'White' }
+        Write-Host ("  {0,-$w} {1}" -f $s, $stepInfo[$s]) -ForegroundColor $highlight
+    }
+    Write-Host ""
+    Write-Host "USAGE EXAMPLES" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  .\Deploy-Lab.ps1 -Steps Full                        # Everything in one command"
+    Write-Host "  .\Deploy-Lab.ps1                                    # Base lab only (no PTA/PSMP)"
+    Write-Host "  .\Deploy-Lab.ps1 -Steps Prerequisites               # Pre-flight check only"
+    Write-Host "  .\Deploy-Lab.ps1 -Steps VaultInstall,PVWAInstall    # Specific steps only"
+    Write-Host "  .\Deploy-Lab.ps1 -Steps CreatePTAVM,PTAInstall      # Add PTA to existing lab"
+    Write-Host "  .\Deploy-Lab.ps1 -Steps PTAInstall                  # Re-run PTA install only"
+    Write-Host "  .\Deploy-Lab.ps1 -Steps CreatePSMPVM,PSMPInstall    # Add PSMP to existing lab"
+    Write-Host "  .\Deploy-Lab.ps1 -Steps PSMPInstall                 # Re-run PSMP install only"
+    Write-Host ""
+    return
+}
 
 $ErrorActionPreference = 'Stop'
 $startTime = Get-Date
@@ -50,7 +94,8 @@ Write-Host ""
 $sharedFolder = Join-Path $Config.VMware.DefaultVMFolder "_SharedFiles"
 New-Item -Path $sharedFolder -ItemType Directory -Force | Out-Null
 
-$allSteps = $Steps -contains "All"
+$fullDeploy = $Steps -contains "Full"
+$allSteps   = $Steps -contains "All" -or $fullDeploy
 $scriptsDir = "$PSScriptRoot\Scripts"
 
 # Step tracking
@@ -158,6 +203,30 @@ if ($allSteps -or $Steps -contains "PSMInstall") {
         -Description "Installing CyberArk PSM"
 }
 
+# PTA and PSMP steps run when explicitly requested or when -Steps Full is used
+if ($Steps -contains "CreatePTAVM" -or $fullDeploy) {
+    Invoke-LabStep -StepName "CreatePTAVM" `
+        -ScriptPath "$scriptsDir\10-CreatePTAVM.ps1" `
+        -Description "Creating PTA01 Rocky Linux 9 VM"
+}
+
+if ($Steps -contains "PTAInstall" -or $fullDeploy) {
+    Invoke-LabStep -StepName "PTAInstall" `
+        -ScriptPath "$scriptsDir\11-InstallPTA.ps1" `
+        -Description "Installing CyberArk PTA (Rocky Linux)"
+}
+
+if ($Steps -contains "CreatePSMPVM" -or $fullDeploy) {
+    Invoke-LabStep -StepName "CreatePSMPVM" `
+        -ScriptPath "$scriptsDir\12-CreatePSMPVM.ps1" `
+        -Description "Creating PSMP01 Rocky Linux 9 VM"
+}
+
+if ($Steps -contains "PSMPInstall" -or $fullDeploy) {
+    Invoke-LabStep -StepName "PSMPInstall" `
+        -ScriptPath "$scriptsDir\13-InstallPSMP.ps1" `
+        -Description "Installing CyberArk PSMP (Rocky Linux)"
+}
 
 # Final Summary
 $totalDuration = (Get-Date) - $startTime
@@ -195,19 +264,6 @@ if ($failed.Count -eq 0) {
 
         $vaultIP = if ($vaultVm) { $vaultVm.IPAddress } else { $null }
         $domainName = $Config.Domain.Name
-
-        # Clean up deployment snapshots — no longer needed once installation is complete
-        if (Test-Path "$PSScriptRoot\Config\DeployedVMs.xml") {
-            Write-Host "Removing deployment snapshots..." -ForegroundColor Cyan
-            $deployedVMs = Import-Clixml "$PSScriptRoot\Config\DeployedVMs.xml"
-            foreach ($vm in $Config.VMs) {
-                $vmx = $deployedVMs[$vm.Name]
-                if ($vmx -and (Test-Path $vmx)) {
-                    Remove-AllLabVMSnapshots -VMXPath $vmx -VMName $vm.Name
-                }
-            }
-            Write-Host ""
-        }
 
         Write-Host "LAB DEPLOYMENT SUCCESSFUL!" -ForegroundColor Green
         Write-Host ""
