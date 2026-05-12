@@ -387,7 +387,7 @@ Write-Host "  PVWA URL: https://comp01.$($Config.Domain.Name)/PasswordVault/v10/
 # ================================================================
 Write-Host "`n[Step 4] Creating PVWA desktop shortcut..." -ForegroundColor Yellow
 
-$pvwaUrl      = "https://comp01.$($Config.Domain.Name)/PasswordVault/v10/logon/cyberark"
+$pvwaUrl      = "https://$($pvwaVM.IPAddress)/PasswordVault/v10/logon/cyberark"
 $shortcutPath = [System.IO.Path]::Combine([Environment]::GetFolderPath('Desktop'), 'PVWA - CyberArk Lab.url')
 
 try {
