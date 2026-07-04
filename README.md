@@ -326,6 +326,12 @@ Configures the complete Vault→PTA syslog chain so PSM session and Vault audit 
 - Copies PSMP installer to PSMP01 via SCP
 - Installs PSMP and registers it with Vault
 
+### `Scripts\20-CreateVaultADObjects.ps1` — Vault AD groups + users (optional)
+- **Opt-in** feature (never auto-run in `All`/`Full`) for the Vault LDAP / AD integration
+- Creates an OU and four Vault role groups (Admins, Users, Auditors, Safe Managers), then populates each with users (`vault_admin1..N`, `vault_user1..N`, `vault_auditor1..N`, `vault_safemgr1..N`)
+- Uses only the supported ActiveDirectory PowerShell module on DC01 — nothing touched on the appliances, so it's redeploy/upgrade safe. Idempotent (existing objects reused)
+- Run via `Deploy-Lab.ps1 -Steps CreateVaultADObjects` or directly: `.\Scripts\20-CreateVaultADObjects.ps1 -UsersPerGroup 10`
+
 ---
 
 ## Post-Deployment Steps
@@ -425,6 +431,7 @@ CyberArk-VMware-Lab\
 │   ├── README-PTA-DR.md          # PTA Disaster Recovery guide
 │   ├── 12-CreatePSMPVM.ps1
 │   ├── 13-InstallPSMP.ps1
+│   ├── 20-CreateVaultADObjects.ps1   # optional: AD groups/users for Vault LDAP
 │   └── Teardown.ps1
 ├── Templates\
 │   └── unattend-base.xml       # Windows unattended install template

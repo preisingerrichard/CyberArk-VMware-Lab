@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-07-04
+
+### Added
+- `Scripts/20-CreateVaultADObjects.ps1` — optional, opt-in feature that creates an AD OU + the four Vault role groups (Admins/Users/Auditors/SafeManagers) and populates them with users (`vault_admin1..N`, etc.) for the Vault LDAP integration. Supported ActiveDirectory module only (redeploy/upgrade safe); idempotent.
+- `Deploy-Lab.ps1` `CreateVaultADObjects` step (opt-in only — never auto-runs in `All`/`Full`).
+
 ## [1.2.0] - 2026-07-04
 
 ### Added
@@ -43,6 +49,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - Master orchestrator `Deploy-Lab.ps1` with per-step execution.
 - Teardown script and helper modules.
 
+[1.3.0]: #130---2026-07-04
 [1.2.0]: #120---2026-07-04
 [1.1.0]: #110---2026-07-04
 [1.0.0]: #100
