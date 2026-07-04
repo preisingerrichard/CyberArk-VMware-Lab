@@ -62,7 +62,7 @@ function Invoke-VMRun {
     } else {
         # PS 5.x: quote any argument that contains a space and isn't already quoted
         $quoted = $Arguments | ForEach-Object {
-            if ($_ -match '\s' -and $_ -notmatch '^".*"$') { "`"$_`"" } else { $_ }
+            if ($_ -match '\s' -and $_ -notmatch '^".*"$') { "$_" } else { $_ }
         }
         $psi.Arguments = $quoted -join ' '
     }
@@ -241,16 +241,16 @@ function New-LabVMFromTemplate {
 
     $vmrunArgs = @(
         "clone"
-        "`"$TemplateVMXPath`""
-        "`"$newVMXPath`""
+        "$TemplateVMXPath"
+        "$newVMXPath"
         $CloneType
     )
 
     if ($SnapshotName) {
-        $vmrunArgs += "-snapshot=`"$SnapshotName`""
+        $vmrunArgs += "-snapshot=$SnapshotName"
     }
 
-    $vmrunArgs += "-cloneName=`"$NewVMName`""
+    $vmrunArgs += "-cloneName=$NewVMName"
 
     Invoke-VMRun -Arguments $vmrunArgs -TimeoutSeconds 1200 | Out-Null
 
@@ -272,7 +272,7 @@ function Start-LabVM {
 
     $guiMode = if ($NoGUI) { "nogui" } else { "gui" }
     Write-Host "Starting VM: $(Split-Path $VMXPath -Leaf) [$guiMode]" -ForegroundColor Cyan
-    Invoke-VMRun -Arguments @("start", "`"$VMXPath`"", $guiMode)
+    Invoke-VMRun -Arguments @("start", "$VMXPath", $guiMode)
 }
 
 function Stop-LabVM {
@@ -284,7 +284,7 @@ function Stop-LabVM {
 
     $mode = if ($Hard) { "hard" } else { "soft" }
     Write-Host "Stopping VM: $(Split-Path $VMXPath -Leaf) [$mode]" -ForegroundColor Yellow
-    Invoke-VMRun -Arguments @("stop", "`"$VMXPath`"", $mode) -NoThrow
+    Invoke-VMRun -Arguments @("stop", "$VMXPath", $mode) -NoThrow
 }
 
 function Restart-LabVM {
@@ -295,7 +295,7 @@ function Restart-LabVM {
     )
 
     $mode = if ($Hard) { "hard" } else { "soft" }
-    Invoke-VMRun -Arguments @("reset", "`"$VMXPath`"", $mode)
+    Invoke-VMRun -Arguments @("reset", "$VMXPath", $mode)
 }
 
 function New-LabVMSnapshot {
@@ -306,7 +306,7 @@ function New-LabVMSnapshot {
     )
 
     Write-Host "Creating snapshot '$SnapshotName'..." -ForegroundColor Cyan
-    Invoke-VMRun -Arguments @("snapshot", "`"$VMXPath`"", "`"$SnapshotName`"")
+    Invoke-VMRun -Arguments @("snapshot", "$VMXPath", "$SnapshotName")
 }
 
 function Restore-LabVMSnapshot {
@@ -317,7 +317,7 @@ function Restore-LabVMSnapshot {
     )
 
     Write-Host "Reverting to snapshot '$SnapshotName'..." -ForegroundColor Yellow
-    Invoke-VMRun -Arguments @("revertToSnapshot", "`"$VMXPath`"", "`"$SnapshotName`"")
+    Invoke-VMRun -Arguments @("revertToSnapshot", "$VMXPath", "$SnapshotName")
 }
 
 function Remove-AllLabVMSnapshots {
@@ -330,7 +330,7 @@ function Remove-AllLabVMSnapshots {
     $label = if ($VMName) { $VMName } else { Split-Path (Split-Path $VMXPath) -Leaf }
 
     $vmrun = $Script:VMwareConfig.VMRunPath
-    $result = & $vmrun "listSnapshots" "`"$VMXPath`"" 2>&1
+    $result = & $vmrun "listSnapshots" "$VMXPath" 2>&1
     $lines  = ($result -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^Total snapshots' }
 
     if ($lines.Count -eq 0) {
@@ -340,7 +340,7 @@ function Remove-AllLabVMSnapshots {
 
     foreach ($snap in $lines) {
         Write-Host "  $label`: removing snapshot '$snap'..." -ForegroundColor DarkGray
-        & $vmrun "deleteSnapshot" "`"$VMXPath`"" "`"$snap`"" | Out-Null
+        & $vmrun "deleteSnapshot" "$VMXPath" "$snap" | Out-Null
     }
     Write-Host "  $label`: $($lines.Count) snapshot(s) removed" -ForegroundColor Green
 }
@@ -356,7 +356,7 @@ function Get-LabVMIPAddress {
     $interval = 10
 
     while ($elapsed -lt $TimeoutSeconds) {
-        $result = Invoke-VMRun -Arguments @("getGuestIPAddress", "`"$VMXPath`"", "-wait") -NoThrow -TimeoutSeconds 30
+        $result = Invoke-VMRun -Arguments @("getGuestIPAddress", "$VMXPath", "-wait") -NoThrow -TimeoutSeconds 30
 
         if ($result.ExitCode -eq 0 -and $result.StdOut -match '\d+\.\d+\.\d+\.\d+') {
             return $result.StdOut.Trim()
@@ -402,7 +402,7 @@ function Wait-LabVMReady {
             $result = Invoke-VMRun -Arguments @(
                 "-gu", $GuestUser,
                 "-gp", $GuestPassword,
-                "runProgramInGuest", "`"$VMXPath`"",
+                "runProgramInGuest", "$VMXPath",
                 "C:\Windows\System32\hostname.exe"
             ) -NoThrow -TimeoutSeconds 20
 
@@ -413,7 +413,7 @@ function Wait-LabVMReady {
         } else {
             # Fallback: requires the VM to be registered in the Workstation library.
             $result = Invoke-VMRun -Arguments @(
-                "getGuestIPAddress", "`"$VMXPath`""
+                "getGuestIPAddress", "$VMXPath"
             ) -NoThrow -TimeoutSeconds 20
 
             if ($result.ExitCode -eq 0 -and $result.StdOut -match '\d+\.\d+\.\d+\.\d+') {
@@ -449,9 +449,9 @@ function Copy-FileToLabVM {
         "-gu", $GuestUser,
         "-gp", $GuestPassword,
         "copyFileFromHostToGuest",
-        "`"$VMXPath`"",
-        "`"$HostPath`"",
-        "`"$GuestPath`""
+        "$VMXPath",
+        "$HostPath",
+        "$GuestPath"
     )
 }
 
@@ -481,14 +481,14 @@ function Invoke-LinuxGuestScript {
     try {
         Invoke-VMRun -Arguments @(
             "-gu", $GuestUser, "-gp", $GuestPassword,
-            "copyFileFromHostToGuest", "`"$VMXPath`"",
-            "`"$tempHostPath`"", "`"$tempGuestPath`""
+            "copyFileFromHostToGuest", "$VMXPath",
+            "$tempHostPath", "$tempGuestPath"
         ) | Out-Null
 
         # chmod+x then execute in a single shell invocation
         $result = Invoke-VMRun -Arguments @(
             "-gu", $GuestUser, "-gp", $GuestPassword,
-            "runProgramInGuest", "`"$VMXPath`"",
+            "runProgramInGuest", "$VMXPath",
             "/bin/bash", "-c", "chmod +x $tempGuestPath && $tempGuestPath ; echo \$? > ${tempGuestPath}.rc"
         ) -TimeoutSeconds $TimeoutSeconds -NoThrow
 
@@ -512,9 +512,9 @@ function Copy-FileFromLabVM {
         "-gu", $GuestUser,
         "-gp", $GuestPassword,
         "copyFileFromGuestToHost",
-        "`"$VMXPath`"",
-        "`"$GuestPath`"",
-        "`"$HostPath`""
+        "$VMXPath",
+        "$GuestPath",
+        "$HostPath"
     )
 }
 
@@ -572,7 +572,7 @@ function Invoke-LabVMScript {
             "-gu", $GuestUser,
             "-gp", $GuestPassword,
             $runCommand,
-            "`"$VMXPath`""
+            "$VMXPath"
         )
 
         if ($NoWait)    { $vmrunArgs += "-noWait" }
@@ -725,16 +725,16 @@ function Set-LabVMNetwork {
     # Update connection type
     $content = $content | ForEach-Object {
         if ($_ -match '^ethernet0\.connectionType') {
-            "ethernet0.connectionType = `"$ConnectionType`""
+            "ethernet0.connectionType = $ConnectionType"
         }
         elseif ($VNetName -and $_ -match '^ethernet0\.vnet') {
-            "ethernet0.vnet = `"$VNetName`""
+            "ethernet0.vnet = $VNetName"
         }
         else { $_ }
     }
 
     if ($VNetName -and ($content -notmatch 'ethernet0\.vnet')) {
-        $content += "ethernet0.vnet = `"$VNetName`""
+        $content += "ethernet0.vnet = $VNetName"
     }
 
     Set-Content -Path $VMXPath -Value $content

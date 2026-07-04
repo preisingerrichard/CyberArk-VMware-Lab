@@ -11,14 +11,17 @@ Automated deployment of a full CyberArk self-hosted environment on VMware Workst
 | DC01 | Active Directory / DNS | 192.168.100.10 | 4 GB | 30 GB | Windows Server 2022 |
 | VAULT01 | CyberArk Vault Server | 192.168.100.20 | 4 GB | 30 GB | Windows Server 2022 |
 | COMP01 | PVWA + CPM + PSM | 192.168.100.30 | 8 GB | 60 GB | Windows Server 2022 |
-| PTA01 | Privileged Threat Analytics | 192.168.100.40 | 8 GB | 60 GB | Rocky Linux 9 |
+| PTA01 | Privileged Threat Analytics (Primary) | 192.168.100.40 | 8 GB | 60 GB | Rocky Linux 9 |
+| PTA02 | Privileged Threat Analytics (Secondary / DR) | 192.168.100.41 | 8 GB | 60 GB | Rocky Linux 9 |
 | PSMP01 | PSM for SSH Proxy | 192.168.100.50 | 4 GB | 40 GB | Rocky Linux 9 |
 
 **Network:** VMnet8 (NAT), subnet `192.168.100.0/24`  
 **Domain:** `cyberark.lab`  
 **PVWA:** `https://comp01.cyberark.lab/PasswordVault/v10/logon/cyberark`
 
-> PTA01 and PSMP01 are optional. The base lab (DC01 + VAULT01 + COMP01) deploys without them.
+> PTA01, PTA02, and PSMP01 are optional. The base lab (DC01 + VAULT01 + COMP01) deploys without them. PTA02 is only needed to test PTA Disaster Recovery — see [Scripts/README-PTA-DR.md](Scripts/README-PTA-DR.md).
+
+> **PTA VMs require 8 GB RAM each.** At 4 GB the post-install JVM utilities (CSR generation, DR wizards) run out of heap and hang once all PTA services are running.
 
 ---
 
@@ -277,13 +280,26 @@ Multiple steps can be combined:
 - Creates a Rocky Linux 9 VM (PTA01) using a kickstart-based unattended install
 - Configures static IP `192.168.100.40`, SSH key pair for automation
 
-### `Scripts\11-InstallPTA.ps1` — Install PTA
+### `Scripts\11-InstallPTA-Primary.ps1` — Install PTA Primary
 - Copies PTA installer files to PTA01 via SCP
 - Runs the PTA installer and post-install configuration wizard
 - Registers PTA with Vault and PVWA
 - Imports PVWA SSL cert into PTA's JVM cacerts (required for PTA → PVWA HTTPS)
 - Imports PTA SSL cert into COMP01's Trusted Root store (required for PVWA → PTA HTTPS)
 - Deploys DiamondWebApp (PTA web UI)
+
+### `Scripts\11-InstallPTA-Secondary.ps1` — Install PTA Secondary
+- Performs the DR-oriented secondary install flow for PTA02
+- Prepares the secondary host for replication and minimal PTA DB operation
+- Opens TCP 27017 (MongoDB replication) required for DR pairing
+
+### `Scripts\11b-ConfigurePTACertificates.ps1` — PTA CA Certificates (optional / DR)
+- Fully automates issuing CA-signed certificates to PTA from the lab's DC01 Enterprise CA — no manual CSR handling
+- Configures the CA: enables SAN-from-request, republishes the CRL, and adds **Client Authentication** EKU to the WebServer template (required — MongoDB DR replication uses the cert as a client cert)
+- Creates the shared DR DNS record (`pta.cyberark.lab` → Primary IP) on DC01
+- Per PTA server: syncs the clock, generates a CSR, submits it to the CA (`certreq`), and installs the signed chain (root exported as PEM)
+- Stores the Vault admin credential in a PVWA safe via REST API as a secure-retrieval demonstration
+- Usage: `.\Scripts\11b-ConfigurePTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02` (omit `-SecondaryName` for a single PTA)
 
 ### `Scripts\12-CreatePSMPVM.ps1` — Create PSMP01 VM
 - Creates a Rocky Linux 9 VM (PSMP01) using a kickstart-based unattended install
@@ -297,20 +313,27 @@ Multiple steps can be combined:
 
 ## Post-Deployment Steps
 
-### PTA — SSL Certificate Trust (lab only)
+### PTA — SSL Certificate Trust
 
-PTA uses a self-signed certificate. By default, PVWA validates the PTA certificate before displaying security events, which fails with self-signed certs and shows **CAWS00001E**.
+Out of the box PTA uses a self-signed certificate, and PVWA validates it before displaying security events — which fails with self-signed certs (**CAWS00001E**). Two options:
 
-For a lab environment, disable certificate validation in PVWA:
+**Quick (lab only):** disable validation in PVWA — **Administration → Options → General → SecurityModuleTrustedConnectionEnabled = `No`**, then Apply.
 
-1. Log in to PVWA as Administrator
-2. Go to **Administration → Options → General**
-3. Set **SecurityModuleTrustedConnectionEnabled** = `No`
-4. Click **Apply**
+**Proper (automated):** run `11b-ConfigurePTACertificates.ps1` to issue PTA a certificate from the lab's DC01 Enterprise CA. COMP01 (domain-joined) already trusts that CA root, so you can leave `SecurityModuleTrustedConnectionEnabled = Yes`. This is also **required for PTA DR** (the MongoDB replica set uses the cert for X.509 member auth).
 
-PTA security events will load immediately after this change.
+### PTA Disaster Recovery (optional)
 
-> In a production environment, install a CA-signed certificate on PTA using `/opt/pta/utility/run.sh` option 15, then import the CA root certificate into COMP01's Trusted Root store instead of disabling validation.
+To pair a Primary + Secondary PTA with MongoDB replication, follow [Scripts/README-PTA-DR.md](Scripts/README-PTA-DR.md). Summary:
+
+1. `10-CreatePTAVM.ps1 -PTANames @("PTA01","PTA02")` — create both VMs
+2. `11-InstallPTA-Primary.ps1` then `11-InstallPTA-Secondary.ps1`
+3. `11b-ConfigurePTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02` — certs (with clientAuth EKU) + shared DNS
+4. `minimalPrepwiz.sh` on PTA02, then `setupPrimary.sh` on PTA01 (**run each once** — see below)
+5. Verify `/opt/pta/mode/primary` (PTA01) and `/opt/pta/mode/secondary` (PTA02)
+
+> **Run the DR wizards once.** `setupPrimary.sh` bootstraps from a clean *standalone* ptadb; a failed re-run leaves ptadb in an uninitialized replica-set state ("not primary"). Recovery without re-imaging: `sed -i '/^replication:/,/replSetName/d' /etc/opt/pta/ptadb/ptadb.conf && systemctl restart ptadb`.
+
+> **Reconnecting a re-imaged PTA to an existing Vault/PVWA:** if PVWA shows the fresh PTA disconnected (JWT `token not valid` / `Error getting Vault Server version`), run `/opt/pta/utility/vaultPermissionsValidation.sh` and answer `y` to recreate the stale `PTAApp` Vault user, restart PTA services, then log in to PVWA to re-sync.
 
 ---
 
@@ -344,7 +367,8 @@ Get-ChildItem "F:\VMs\CyberArk" -Recurse -Filter "*.lck" | Remove-Item -Recurse 
 |---|---|
 | PVWA | `https://comp01.cyberark.lab/PasswordVault/v10/logon/cyberark` |
 | Vault | `192.168.100.20:1858` |
-| PTA | `https://192.168.100.40:8443` |
+| PTA (Primary) | `https://192.168.100.40:8443` |
+| PTA (Secondary / DR) | `192.168.100.41` (ptadb only — no web UI by design) |
 | Domain | `cyberark.lab` |
 | Admin user | `CYBERARKLAB\Administrator` |
 
@@ -377,7 +401,10 @@ CyberArk-VMware-Lab\
 │   ├── 08-InstallCPM.ps1
 │   ├── 09-InstallPSM.ps1
 │   ├── 10-CreatePTAVM.ps1
-│   ├── 11-InstallPTA.ps1
+│   ├── 11-InstallPTA-Primary.ps1
+│   ├── 11-InstallPTA-Secondary.ps1
+│   ├── 11b-ConfigurePTACertificates.ps1
+│   ├── README-PTA-DR.md          # PTA Disaster Recovery guide
 │   ├── 12-CreatePSMPVM.ps1
 │   ├── 13-InstallPSMP.ps1
 │   └── Teardown.ps1
@@ -392,7 +419,8 @@ CyberArk-VMware-Lab\
 ## Notes
 
 - **Deployment time:** ~2–3 hours for base lab; ~3–4 hours for full lab including PTA and PSMP
-- **Host RAM:** 16 GB minimum for base lab; 32 GB recommended for full lab (all VMs use ~28 GB combined when running)
-- **Re-runnable:** Every script checks for existing state and skips completed steps, so individual scripts are safe to re-run after a partial failure
+- **Host RAM:** 16 GB minimum for base lab; 32 GB recommended for full lab. Add a second PTA (PTA02, 8 GB) only when testing DR.
+- **Re-runnable:** Every script checks for existing state and skips completed steps, so individual scripts are safe to re-run after a partial failure. **Exception:** the PTA DR wizards (`minimalPrepwiz.sh` / `setupPrimary.sh`) must be run once — see the DR notes above.
 - **CyberArk version:** Tested with CyberArk v14/v15 component packages
 - **VMnet8 subnet:** Must be configured as `192.168.100.0/24` in VMware Virtual Network Editor before deployment. Without this, the host cannot reach guest VMs over TCP.
+- **PTA DR:** Full Disaster Recovery walkthrough and troubleshooting in [Scripts/README-PTA-DR.md](Scripts/README-PTA-DR.md).

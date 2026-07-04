@@ -1,12 +1,16 @@
 <#
 .SYNOPSIS
-    Install CyberArk Privileged Threat Analytics (PTA) on PTA01 (Rocky Linux 9).
+    Install CyberArk Privileged Threat Analytics (PTA) on Rocky Linux 9 VMs.
 .DESCRIPTION
     Uses Windows built-in ssh.exe/scp.exe with a dedicated lab Ed25519 key.
-    No Posh-SSH or open-vm-tools required -- keeps PTA01 OS minimal as required
+    No Posh-SSH or open-vm-tools required -- keeps PTA OS minimal as required
     by CyberArk PTA prerequisites.
 
-    Steps:
+    By default installs only PTA01. For DR use the secondary script on PTA02:
+      .\11-InstallPTA-Primary.ps1 -PTANames @("PTA01")
+      .\11-InstallPTA-Secondary.ps1 -PTANames @("PTA02")
+
+    Steps per VM:
       1   Copy PTA installer files via SCP
       2   Import CyberArk GPG key into RPM keyring
       3   Install sshpass (PTA prerequisite)
@@ -25,7 +29,7 @@
               6j  Wait for ptaweb on port 8443
 
     Prerequisites:
-    - PTA01 must be running Rocky Linux 9 with sshd enabled (10-CreatePTAVM.ps1)
+    - PTA VMs must be running Rocky Linux 9 with sshd enabled (10-CreatePTAVM.ps1)
     - Windows OpenSSH client (ssh.exe / scp.exe) - included in Windows 10/11
     - Files in Installers\PTA\:
         pta_installer.sh
@@ -36,7 +40,8 @@
 #>
 
 param(
-    [string]$ConfigPath = "$PSScriptRoot\..\Config\LabConfig.psd1"
+    [string]$ConfigPath = "$PSScriptRoot\..\Config\LabConfig.psd1",
+    [string[]]$PTANames = @("PTA01")  # Override with @("PTA01","PTA02") to install multiple
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,19 +60,30 @@ $Config   = Import-PowerShellDataFile $ConfigPath
 $CAConfig = Import-PowerShellDataFile "$PSScriptRoot\..\Config\CyberArkConfig.psd1"
 Initialize-VMwareHelper -Config $Config.VMware
 
-$ptaVM = $Config.VMs | Where-Object { $_.Role -eq 'PTA' -or $_.Role -contains 'PTA' } | Select-Object -First 1
-if (-not $ptaVM) { throw "No VM with Role 'PTA' found in LabConfig.psd1" }
+$allPTAVMs = @($Config.VMs | Where-Object { $_.Role -eq 'PTA' -or $_.Role -contains 'PTA' })
+if (-not $allPTAVMs) { throw "No VM with Role 'PTA' found in LabConfig.psd1" }
 
-$ptaVMX    = Join-Path $Config.VMware.DefaultVMFolder "$($ptaVM.Name)\$($ptaVM.Name).vmx"
-$ptaIP     = $ptaVM.IPAddress
-$ptaPort   = $CAConfig.PTA.APIPort
+$ptaVMs = @($allPTAVMs | Where-Object { $_.Name -in $PTANames })
+if (-not $ptaVMs) { throw "No PTA VMs found matching names: $($PTANames -join ', ')" }
+if ($ptaVMs.Count -ne 1 -or $ptaVMs[0].Name -ne 'PTA01') {
+    throw "11-InstallPTA-Primary.ps1 is intended for PTA01 only. Use 11-InstallPTA-Secondary.ps1 for PTA02."
+}
+
+Write-Host ("=" * 60) -ForegroundColor Cyan
+Write-Host "Installing PTA on: $($ptaVMs.Name -join ', ')" -ForegroundColor Cyan
+Write-Host ("=" * 60) -ForegroundColor Cyan
+
+# Verify all VMs exist before starting
+foreach ($vm in $ptaVMs) {
+    $vmx = Join-Path $Config.VMware.DefaultVMFolder "$($vm.Name)\$($vm.Name).vmx"
+    if (-not (Test-Path $vmx)) {
+        throw "$($vm.Name) VMX not found at '$vmx' - run 10-CreatePTAVM.ps1 first"
+    }
+}
+
 $mediaBase = $Config.CyberArkMedia.BasePath
 $ptaSource = Join-Path $mediaBase $Config.CyberArkMedia.PTAFolder
 $guestDir  = $CAConfig.PTA.GuestInstallDir
-
-if (-not (Test-Path $ptaVMX)) {
-    throw "PTA01 VMX not found at '$ptaVMX' - run 10-CreatePTAVM.ps1 first"
-}
 
 # ================================================================
 # Lab SSH key setup
@@ -81,6 +97,11 @@ if (-not (Test-Path $labKeyPath)) {
     if (-not (Test-Path $labKeyPath)) { throw "ssh-keygen failed to create $labKeyPath" }
 }
 $labPubKey = Get-Content "$labKeyPath.pub" -Raw
+
+foreach ($ptaVM in $ptaVMs) {
+    $ptaVMX    = Join-Path $Config.VMware.DefaultVMFolder "$($ptaVM.Name)\$($ptaVM.Name).vmx"
+    $ptaIP     = $ptaVM.IPAddress
+    $ptaPort   = $CAConfig.PTA.APIPort
 
 # SSH options used by every call -- shared as an array splat.
 # UserKnownHostsFile=NUL discards known_hosts for this lab key so a
@@ -372,6 +393,8 @@ firewall-cmd --permanent --zone=$Z --add-port=80/tcp
 firewall-cmd --permanent --zone=$Z --add-port=8080/tcp
 firewall-cmd --permanent --zone=$Z --add-port=11514/tcp
 firewall-cmd --permanent --zone=$Z --add-port=11514/udp
+# ptaDB / MongoDB replication port (required for DR pairing with the Secondary)
+firewall-cmd --permanent --zone=$Z --add-port=27017/tcp
 # PTA port-forwarding rules (TCP 80->8080, TCP 443->8443)
 firewall-cmd --permanent --zone=$Z --add-forward-port=port=80:proto=tcp:toport=8080
 firewall-cmd --permanent --zone=$Z --add-forward-port=port=443:proto=tcp:toport=8443
@@ -686,7 +709,7 @@ public class Pta11TrustAll : ICertificatePolicy {
             Write-Host "    Found $ptaUser (id: $($ptaUserObj.id), personalSafe now: '$($ptaUserObj.personalSafe)')" -ForegroundColor DarkGray
 
             # (d) Set the PersonalSafe vault attribute.
-            # PUT /api/Users requires the full user object — partial bodies return 400.
+            # PUT /api/Users requires the full user object - partial bodies return 400.
             # GET the full representation first, patch personalSafe, then PUT it back.
             $fullUserResp = Invoke-WebRequest -Uri "$pvwaBase/api/Users/$($ptaUserObj.id)" `
                 -Method GET -Headers $pvwaHdrs -UseBasicParsing
@@ -883,11 +906,41 @@ if ($ptaUp) {
     Write-Host "  [OK] PTA web is responding on port $ptaPort" -ForegroundColor Green
 } else {
     Write-Warning "PTA web did not respond on port $ptaPort within 3 minutes"
-    Write-Warning "Check 'systemctl status ptaweb' on PTA01"
+    Write-Warning "Check 'systemctl status ptaweb' on $($ptaVM.Name)"
 }
 
-Write-Host "`n$("=" * 60)" -ForegroundColor Green
-Write-Host "PTA installation complete on $($ptaVM.Name)" -ForegroundColor Green
-Write-Host "  PTA API:  https://$ptaIP`:$ptaPort" -ForegroundColor Green
-Write-Host "  PTA Web:  https://$ptaIP" -ForegroundColor Green
-Write-Host ("=" * 60) -ForegroundColor Green
+    Write-Host "`n$("=" * 60)" -ForegroundColor Green
+    Write-Host "PTA installation complete on $($ptaVM.Name)" -ForegroundColor Green
+    Write-Host "  PTA API:  https://$ptaIP`:$ptaPort" -ForegroundColor Green
+    Write-Host "  PTA Web:  https://$ptaIP" -ForegroundColor Green
+    Write-Host ("=" * 60) -ForegroundColor Green
+}
+
+Write-Host "`nAll PTA installations complete." -ForegroundColor Green
+Write-Host "`n$("=" * 80)" -ForegroundColor Cyan
+Write-Host "NEXT STEPS" -ForegroundColor Cyan
+Write-Host ("=" * 80) -ForegroundColor Cyan
+
+Write-Host "`n[For Single PTA Deployment (Primary only)]" -ForegroundColor Yellow
+Write-Host "  PTA Primary is ready:" -ForegroundColor DarkGray
+Write-Host "    Web UI: https://192.168.100.40:8443" -ForegroundColor DarkGray
+Write-Host "    Credentials: admin / Cyberark1!" -ForegroundColor DarkGray
+Write-Host "  Generate and install SSL certificates (recommended for production):" -ForegroundColor DarkGray
+Write-Host "    ssh root@pta01.cyberark.lab" -ForegroundColor DarkGray
+Write-Host "    bash /opt/pta/utility/run.sh" -ForegroundColor DarkGray
+Write-Host "    Option 14: Generate CSR, Option 15: Install certificate" -ForegroundColor DarkGray
+
+Write-Host "`n[For Disaster Recovery Deployment (Primary + Secondary)]" -ForegroundColor Yellow
+Write-Host "  1. Run: .\11-InstallPTA-Secondary.ps1 -PTANames @(""PTA02"")" -ForegroundColor DarkGray
+Write-Host "  2. Generate CSRs on both Primary and Secondary servers:" -ForegroundColor DarkGray
+Write-Host "     - Include SAN with both server FQDNs and IPs" -ForegroundColor DarkGray
+Write-Host "     - Example SAN format:" -ForegroundColor DarkGray
+Write-Host "       Primary:   dns:pta01.cyberark.lab,dns:pta.cyberark.lab,ip:192.168.100.40" -ForegroundColor DarkGray
+Write-Host "       Secondary: dns:pta02.cyberark.lab,dns:pta.cyberark.lab,ip:192.168.100.41" -ForegroundColor DarkGray
+Write-Host "  3. Install certificates on both servers (option 15 in run.sh)" -ForegroundColor DarkGray
+Write-Host "  4. On Primary, run: bash /opt/pta/utility/dr/setupPrimary.sh" -ForegroundColor DarkGray
+Write-Host "  5. Verify replication in PVWA: Administration > Privileged Threat Analytics" -ForegroundColor DarkGray
+
+Write-Host "`n$("=" * 80)" -ForegroundColor Cyan
+Write-Host "Full documentation: Scripts\README-PTA-DR.md" -ForegroundColor Cyan
+Write-Host ("=" * 80) -ForegroundColor Cyan

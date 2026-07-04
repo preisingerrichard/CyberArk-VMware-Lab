@@ -212,8 +212,8 @@ if ($Steps -contains "CreatePTAVM" -or $fullDeploy) {
 
 if ($Steps -contains "PTAInstall" -or $fullDeploy) {
     Invoke-LabStep -StepName "PTAInstall" `
-        -ScriptPath "$scriptsDir\11-InstallPTA.ps1" `
-        -Description "Installing CyberArk PTA (Rocky Linux)"
+        -ScriptPath "$scriptsDir\11-InstallPTA-Primary.ps1" `
+        -Description "Installing CyberArk PTA Primary (Rocky Linux)"
 }
 
 if ($Steps -contains "CreatePSMPVM" -or $fullDeploy) {

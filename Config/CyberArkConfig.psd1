@@ -64,6 +64,17 @@
         Timezone        = "UTC"
         DaysActivity    = 180
         GuestInstallDir = "/tmp/pta-install"
+        SharedDnsPrefix = "pta"            # shared A record name (pta.cyberark.lab)
+
+        Certificate = @{
+            Organization = "CyberArk Lab"
+            Department   = "IT"
+            City         = "Lab"
+            State        = "Lab"
+            Country      = "US"
+            SafeName     = "PTA-Automation"   # PVWA safe for Vault admin credential
+            AccountName  = "VaultAdmin-PTA"   # account object name in safe
+        }
     }
 
     ServiceAccounts = @{
