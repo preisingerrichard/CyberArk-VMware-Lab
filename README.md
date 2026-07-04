@@ -309,6 +309,12 @@ Multiple steps can be combined:
 - Stores the Vault admin credential in a PVWA safe via REST API as a secure-retrieval demonstration
 - Usage: `.\Scripts\11b-ConfigurePTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02` (omit `-SecondaryName` for a single PTA)
 
+### `Scripts\11c-ConfigureVaultSyslogToPTA.ps1` — Vault → PTA Syslog (session monitoring)
+- Populates the `[SYSLOG]` section of the Vault's `dbparm.ini` to forward audit records (including PSM session activity) to the PTA Primary, then restarts the Vault
+- Uses the `Syslog\PTA.xsl` translator; defaults to `11514/TCP` to match PTA's `syslog_inbound` listener (backs up `dbparm.ini` first)
+- Also wired into `Deploy-Lab.ps1` as the `VaultPTASyslog` step (runs after `PTAInstall` in a Full deploy)
+- Usage: `.\Scripts\11c-ConfigureVaultSyslogToPTA.ps1` (or `-PrimaryPTAName PTA01 -SyslogPort 11514 -SyslogProtocol TCP`)
+
 ### `Scripts\12-CreatePSMPVM.ps1` — Create PSMP01 VM
 - Creates a Rocky Linux 9 VM (PSMP01) using a kickstart-based unattended install
 - Configures static IP `192.168.100.50`, SSH key pair for automation
@@ -412,6 +418,7 @@ CyberArk-VMware-Lab\
 │   ├── 11-InstallPTA-Primary.ps1
 │   ├── 11-InstallPTA-Secondary.ps1
 │   ├── 11b-ConfigurePTACertificates.ps1
+│   ├── 11c-ConfigureVaultSyslogToPTA.ps1
 │   ├── README-PTA-DR.md          # PTA Disaster Recovery guide
 │   ├── 12-CreatePSMPVM.ps1
 │   ├── 13-InstallPSMP.ps1

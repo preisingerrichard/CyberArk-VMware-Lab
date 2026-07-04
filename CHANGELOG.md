@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-07-04
+
+### Added
+- `Scripts/11c-ConfigureVaultSyslogToPTA.ps1` — configures the Vault's `dbparm.ini` `[SYSLOG]` section to forward audit records (including PSM session activity) to the PTA Primary using the `Syslog\PTA.xsl` translator, then restarts the Vault. Backs up `dbparm.ini` first; defaults to `11514/TCP` to match PTA's `syslog_inbound`.
+- `Deploy-Lab.ps1` `VaultPTASyslog` step (runs after `PTAInstall` in a Full deploy).
+
 ## [1.1.0] - 2026-07-04
 
 ### Added
@@ -34,5 +40,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - Master orchestrator `Deploy-Lab.ps1` with per-step execution.
 - Teardown script and helper modules.
 
+[1.2.0]: #120---2026-07-04
 [1.1.0]: #110---2026-07-04
 [1.0.0]: #100
