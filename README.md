@@ -310,9 +310,12 @@ Multiple steps can be combined:
 - Usage: `.\Scripts\11b-ConfigurePTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02` (omit `-SecondaryName` for a single PTA)
 
 ### `Scripts\11c-ConfigureVaultSyslogToPTA.ps1` — Vault → PTA Syslog (session monitoring)
-- Populates the `[SYSLOG]` section of the Vault's `dbparm.ini` to forward audit records (including PSM session activity) to the PTA Primary, then restarts the Vault
-- Uses the `Syslog\PTA.xsl` translator; defaults to `11514/TCP` to match PTA's `syslog_inbound` listener (backs up `dbparm.ini` first)
-- Also wired into `Deploy-Lab.ps1` as the `VaultPTASyslog` step (runs after `PTAInstall` in a Full deploy)
+Configures the complete Vault→PTA syslog chain so PSM session and Vault audit events reach PTA:
+- **PTA side** (via SSH): sets `syslog_inbound` to a plain-TCP listener on 11514 (drops the same-port TLS entry) and `enable_client_verification=false`, then restarts `appmgr` so the unsecured listener binds
+- **Vault side** (via vmrun): adds the `AllowNonStandardFWAddresses` rule to `dbparm.ini [MAIN]` (the Vault's hardened firewall blocks its own outbound syslog without it) and writes the `[SYSLOG]` section (`Syslog\PTA.xsl`, PTA IP/port/protocol, message-code filter), then restarts the Vault
+- Verifies `Test-NetConnection` Vault→PTA succeeds; backs up both config files first
+- Defaults to `11514/TCP` (unsecured, lab). For a secured channel use TLS + a trusted connection
+- Wired into `Deploy-Lab.ps1` as the `VaultPTASyslog` step (runs after `PTAInstall` in a Full deploy)
 - Usage: `.\Scripts\11c-ConfigureVaultSyslogToPTA.ps1` (or `-PrimaryPTAName PTA01 -SyslogPort 11514 -SyslogProtocol TCP`)
 
 ### `Scripts\12-CreatePSMPVM.ps1` — Create PSMP01 VM

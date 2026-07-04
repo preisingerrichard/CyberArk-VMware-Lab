@@ -6,7 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ## [1.2.0] - 2026-07-04
 
 ### Added
-- `Scripts/11c-ConfigureVaultSyslogToPTA.ps1` — configures the Vault's `dbparm.ini` `[SYSLOG]` section to forward audit records (including PSM session activity) to the PTA Primary using the `Syslog\PTA.xsl` translator, then restarts the Vault. Backs up `dbparm.ini` first; defaults to `11514/TCP` to match PTA's `syslog_inbound`.
+- `Scripts/11c-ConfigureVaultSyslogToPTA.ps1` — configures the complete Vault→PTA syslog chain for PSM session / Vault audit monitoring:
+  - PTA side: `syslog_inbound` plain-TCP listener on 11514 + `enable_client_verification=false`, restart `appmgr`.
+  - Vault side: `AllowNonStandardFWAddresses` firewall rule in `dbparm.ini [MAIN]` (required — the Vault firewall otherwise blocks its own outbound syslog) + `[SYSLOG]` section (`Syslog\PTA.xsl`), restart the Vault.
+  - Verifies Vault→PTA reachability; backs up both config files. Defaults to `11514/TCP` (unsecured).
 - `Deploy-Lab.ps1` `VaultPTASyslog` step (runs after `PTAInstall` in a Full deploy).
 
 ## [1.1.0] - 2026-07-04
