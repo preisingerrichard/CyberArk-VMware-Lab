@@ -221,6 +221,14 @@ Multiple steps can be combined:
 .\Deploy-Lab.ps1 -Steps VaultInstall, PVWAInstall, CPMInstall
 ```
 
+> **PTA scope of `Deploy-Lab.ps1`:** `CreatePTAVM` builds **PTA01** only and `PTAInstall` runs the **Primary** install (`11-InstallPTA-Primary.ps1`). The PTA **Secondary** and **certificate/DR** steps are intentionally *not* orchestrator steps — run them as standalone scripts when testing Disaster Recovery:
+> ```powershell
+> .\Scripts\10-CreatePTAVM.ps1 -PTANames @("PTA02")          # add the Secondary VM
+> .\Scripts\11-InstallPTA-Secondary.ps1                       # install the Secondary
+> .\Scripts\11b-ConfigurePTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02
+> ```
+> See [Scripts/README-PTA-DR.md](Scripts/README-PTA-DR.md) for the full DR flow.
+
 ---
 
 ## What Each Script Does
