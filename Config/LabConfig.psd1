@@ -91,11 +91,21 @@
             Name        = "PTA01"
             Role        = "PTA"
             CPUs        = 4
-            MemoryMB    = 8192
+            MemoryMB    = 8192   # PTA needs 8GB+; at 4GB the post-install JVM utils (CSR gen) thrash
             DiskGB      = 60
             IPAddress   = "192.168.100.40"
             OS          = "RockyLinux9"
             Description = "CyberArk Privileged Threat Analytics"
+        },
+        @{
+            Name        = "PTA02"
+            Role        = "PTA"
+            CPUs        = 4
+            MemoryMB    = 8192   # PTA needs 8GB+; at 4GB the post-install JVM utils (CSR gen) thrash
+            DiskGB      = 60
+            IPAddress   = "192.168.100.41"
+            OS          = "RockyLinux9"
+            Description = "CyberArk PTA - Secondary/DR"
         },
         @{
             Name        = "PSMP01"

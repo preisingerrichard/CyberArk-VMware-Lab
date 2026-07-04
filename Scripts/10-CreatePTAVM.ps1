@@ -1,25 +1,30 @@
 <#
 .SYNOPSIS
-    Create and provision the PTA01 Rocky Linux 9 virtual machine.
+    Create and provision PTA Rocky Linux 9 virtual machines.
 .DESCRIPTION
-    1. Creates PTA01 VM (VMX + VMDK) in VMware Workstation using BIOS firmware
+    Creates PTA VMs (VMX + VMDK) in VMware Workstation using BIOS firmware.
+
+    By default creates only PTA01. To create multiple PTAs for DR testing:
+      .\10-CreatePTAVM.ps1 -PTANames @("PTA01","PTA02")
+
+    Steps per VM:
+    1. Creates VM (VMX + VMDK) in VMware Workstation using BIOS firmware
     2. Creates a kickstart ISO (ks.cfg) attached as sata0:1
-    3. Boots via BIOS/isolinux; injects inst.ks=cdrom by pressing Tab in the
-       isolinux menu via WScript.Shell. Anaconda finds ks.cfg on the kickstart
-       CDROM (sata0:1) and installs Rocky Linux fully unattended.
-    4. Waits for open-vm-tools, then registers PTA01 in DeployedVMs.xml
+    3. Boots via BIOS/isolinux; injects inst.ks=cdrom via WScript.Shell
+    4. Waits for open-vm-tools, then registers VM in DeployedVMs.xml
 
     Uses guestOS = "other3xlinux-64" to ensure BIOS mode. rhel9-64Guest forces
     EFI in VMware virtualHW 19 regardless of the firmware = "bios" VMX setting.
 
-    Run this before 11-InstallPTA.ps1.
-    Installation takes 20-35 minutes; the script waits automatically.
+    Run this before 11-InstallPTA-Primary.ps1 or 11-InstallPTA-Secondary.ps1.
+    Installation takes 20-35 minutes per VM; the script waits automatically.
 #>
 
 param(
     [string]$ConfigPath        = "$PSScriptRoot\..\Config\LabConfig.psd1",
     [int]   $InstallTimeoutMin = 60,
-    [switch]$Force
+    [switch]$Force,
+    [string[]]$PTANames        = @("PTA01")  # Override with @("PTA01","PTA02") to deploy multiple
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,17 +35,14 @@ Import-Module "$PSScriptRoot\..\Helpers\VMwareHelper.psm1" -Force
 $Config = Import-PowerShellDataFile $ConfigPath
 Initialize-VMwareHelper -Config $Config.VMware
 
-$ptaVM = $Config.VMs | Where-Object { $_.Role -eq 'PTA' -or $_.Role -contains 'PTA' } | Select-Object -First 1
-if (-not $ptaVM) { throw "No VM with Role 'PTA' found in LabConfig.psd1" }
+$allPTAVMs = @($Config.VMs | Where-Object { $_.Role -eq 'PTA' -or $_.Role -contains 'PTA' })
+if (-not $allPTAVMs) { throw "No VM with Role 'PTA' found in LabConfig.psd1" }
 
-$vmFolder = Join-Path $Config.VMware.DefaultVMFolder $ptaVM.Name
-$vmxPath  = Join-Path $vmFolder "$($ptaVM.Name).vmx"
-$vmdkPath = Join-Path $vmFolder "$($ptaVM.Name).vmdk"
-$ksISOPath = Join-Path $vmFolder "ks.iso"
-$rockyISO = $Config.ISOs.RockyLinux
+$ptaVMs = @($allPTAVMs | Where-Object { $_.Name -in $PTANames })
+if (-not $ptaVMs) { throw "No PTA VMs found matching names: $($PTANames -join ', ')" }
 
 Write-Host ("=" * 60) -ForegroundColor Cyan
-Write-Host "Creating PTA01 VM  ($($ptaVM.IPAddress), Rocky Linux 9)" -ForegroundColor Cyan
+Write-Host "Creating PTA VMs: $($ptaVMs.Name -join ', ')" -ForegroundColor Cyan
 Write-Host ("=" * 60) -ForegroundColor Cyan
 
 function New-OemdrvIso {
@@ -114,9 +116,18 @@ function Test-VMRunning {
     return ($listResult.StdOut -match [regex]::Escape($Path))
 }
 
+$rockyISO = $Config.ISOs.RockyLinux
 if (-not (Test-Path $rockyISO)) {
     throw "Rocky Linux ISO not found: '$rockyISO' - update ISOs.RockyLinux in LabConfig.psd1"
 }
+
+foreach ($ptaVM in $ptaVMs) {
+    $vmFolder = Join-Path $Config.VMware.DefaultVMFolder $ptaVM.Name
+    $vmxPath  = Join-Path $vmFolder "$($ptaVM.Name).vmx"
+    $vmdkPath = Join-Path $vmFolder "$($ptaVM.Name).vmdk"
+    $ksISOPath = Join-Path $vmFolder "ks.iso"
+
+    Write-Host "`n[PTA VM] Creating $($ptaVM.Name) ($($ptaVM.IPAddress), Rocky Linux 9)" -ForegroundColor Cyan
 
 New-Item -Path $vmFolder -ItemType Directory -Force | Out-Null
 
@@ -124,10 +135,11 @@ if (Test-Path $vmxPath) {
     if (-not $Force) {
         throw "PTA01 VM already exists at '$vmxPath'. Use -Force to power off and recreate it."
     }
-    Write-Host "`n[Step 0] Tearing down existing PTA01 VM (-Force)..." -ForegroundColor Yellow
-    if (Test-VMRunning -Path $vmxPath) {
-        Write-Host "  Stopping PTA01..." -ForegroundColor DarkGray
-        Invoke-VMRun -Arguments @("stop", "`"$vmxPath`"", "hard") -NoThrow | Out-Null
+    Write-Host "`n[Step 0] Tearing down existing $($ptaVM.Name) VM (-Force)..." -ForegroundColor Yellow
+    $vmxPathUnix = $vmxPath -replace '\\', '/'
+    if (Test-VMRunning -Path $vmxPathUnix) {
+        Write-Host "  Stopping $($ptaVM.Name)..." -ForegroundColor DarkGray
+        Invoke-VMRun -Arguments @("stop", $vmxPathUnix, "hard") -NoThrow | Out-Null
         Start-Sleep -Seconds 5
     }
     Write-Host "  Deleting VM folder: $vmFolder" -ForegroundColor DarkGray
@@ -205,8 +217,9 @@ Write-Host "  [OK] VMX ready: $vmxPath" -ForegroundColor Green
 # ================================================================
 Write-Host "`n[Step 2] Generating OEMDRV kickstart ISO..." -ForegroundColor Yellow
 
-# Generate lab SSH key if not present -- 11-InstallPTA.ps1 uses the private key;
-# the public key is embedded in the kickstart so the VM trusts it from first boot.
+# Generate lab SSH key if not present -- the PTA primary/secondary installers use
+# the private key; the public key is embedded in the kickstart so the VM trusts it
+# from first boot.
 $labKeyPath = Join-Path $PSScriptRoot "..\Config\pta_lab_key"
 $labKeyPath = (Resolve-Path -LiteralPath (Split-Path $labKeyPath)).Path + "\pta_lab_key"
 if (-not (Test-Path $labKeyPath)) {
@@ -227,11 +240,11 @@ try {
 cmdline
 lang en_US.UTF-8
 keyboard --vckeymap=us --xlayouts=us
-timezone UTC --utc
-network --bootproto=static --device=link --ip=$($ptaVM.IPAddress) --netmask=$($Config.Network.SubnetMask) --gateway=$($Config.Network.Gateway) --nameserver=$($Config.Network.DNS),8.8.8.8 --hostname=pta01.$($Config.Domain.Name) --activate
+timezone UTC --utc --ntpservers=$($Config.Network.DNS)
+network --bootproto=static --device=link --ip=$($ptaVM.IPAddress) --netmask=$($Config.Network.SubnetMask) --gateway=$($Config.Network.Gateway) --nameserver=$($Config.Network.DNS),8.8.8.8 --hostname=$($ptaVM.Name.ToLower()).$($Config.Domain.Name) --activate
 rootpw --plaintext $($Config.LocalAdmin.Password)
 selinux --permissive
-firewall --enabled --service=ssh --port=80:tcp --port=443:tcp --port=8080:tcp --port=8443:tcp --port=514:tcp --port=514:udp --port=11514:tcp --port=11514:udp
+firewall --enabled --service=ssh --port=80:tcp --port=443:tcp --port=8080:tcp --port=8443:tcp --port=514:tcp --port=514:udp --port=11514:tcp --port=11514:udp --port=27017:tcp
 bootloader --location=mbr --boot-drive=sda
 clearpart --all --initlabel --drives=sda
 autopart --type=lvm
@@ -242,6 +255,7 @@ unzip
 glibc-common
 logrotate
 iproute
+chrony
 %end
 %post
 echo "PermitRootLogin yes" > /etc/ssh/sshd_config.d/10-lab.conf
@@ -250,6 +264,15 @@ systemctl enable sshd
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
 echo "$labPubKey" > /root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys
+# Time sync from DC01 (domain time source) - CA-issued certs fail with clock skew
+cat > /etc/chrony.conf <<CHRONYCONF
+server $($Config.Network.DNS) iburst
+driftfile /var/lib/chrony/drift
+makestep 1.0 -1
+rtcsync
+logdir /var/log/chrony
+CHRONYCONF
+systemctl enable chronyd
 %end
 reboot
 "@
@@ -277,8 +300,9 @@ if (Test-Path $nvramPath) {
 }
 
 $listResult = Invoke-VMRun -Arguments @("list") -NoThrow
-if ($listResult.StdOut -notmatch [regex]::Escape($vmxPath)) {
-    Invoke-VMRun -Arguments @("start", "`"$vmxPath`"") | Out-Null
+$vmxPathUnix = $vmxPath -replace '\\', '/'
+if ($listResult.StdOut -notmatch [regex]::Escape($vmxPathUnix)) {
+    Invoke-VMRun -Arguments @("start", $vmxPathUnix) | Out-Null
     Write-Host "  VM started - waiting 20s for BIOS POST and isolinux menu..." -ForegroundColor DarkGray
     Start-Sleep -Seconds 20
 } else {
@@ -429,9 +453,19 @@ try {
     Write-Warning "Add manually on DC01: Add-DnsServerResourceRecordA -Name $ptaShort -ZoneName $zoneName -IPv4Address $($ptaVM.IPAddress)"
 }
 
-$elapsed = (Get-Date) - $startTime
-Write-Host "`n$("=" * 60)" -ForegroundColor Green
-Write-Host "PTA01 ready - Rocky Linux 9 installed ($($elapsed.ToString('hh\:mm\:ss')))" -ForegroundColor Green
-Write-Host "  IP:   $($ptaVM.IPAddress)" -ForegroundColor Green
-Write-Host "  Next: .\Deploy-Lab.ps1 -Steps PTAInstall" -ForegroundColor Green
-Write-Host ("=" * 60) -ForegroundColor Green
+    $elapsed = (Get-Date) - $startTime
+    Write-Host "`n$("=" * 60)" -ForegroundColor Green
+    Write-Host "$($ptaVM.Name) ready - Rocky Linux 9 installed ($($elapsed.ToString('hh\:mm\:ss')))" -ForegroundColor Green
+    Write-Host "  IP:   $($ptaVM.IPAddress)" -ForegroundColor Green
+    Write-Host ("=" * 60) -ForegroundColor Green
+}
+
+Write-Host "`nAll PTA VMs created successfully." -ForegroundColor Green
+if ($ptaVMs.Count -eq 1 -and $ptaVMs[0].Name -eq "PTA01") {
+    Write-Host "Next: .\Scripts\11-InstallPTA-Primary.ps1 -PTANames @(""PTA01"")" -ForegroundColor Green
+} elseif ($ptaVMs.Count -eq 1 -and $ptaVMs[0].Name -eq "PTA02") {
+    Write-Host "Next: .\Scripts\11-InstallPTA-Secondary.ps1 -PTANames @(""PTA02"")" -ForegroundColor Green
+} else {
+    Write-Host "Next step 1: .\Scripts\11-InstallPTA-Primary.ps1 -PTANames @(""PTA01"")" -ForegroundColor Green
+    Write-Host "Next step 2: .\Scripts\11-InstallPTA-Secondary.ps1 -PTANames @(""PTA02"")" -ForegroundColor Green
+}
