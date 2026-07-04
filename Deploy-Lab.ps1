@@ -17,7 +17,8 @@ param(
     [ValidateSet(
         "All", "Full", "Prerequisites", "BaseVM", "DeployVMs", "DomainController",
         "DomainJoin", "VaultInstall", "PVWAInstall", "CPMInstall",
-        "PSMInstall", "CreatePTAVM", "PTAInstall", "VaultPTASyslog", "CreatePSMPVM", "PSMPInstall"
+        "PSMInstall", "CreatePTAVM", "PTAInstall", "VaultPTASyslog", "CreatePSMPVM", "PSMPInstall",
+        "CreateVaultADObjects"
     )]
     [string[]]$Steps = @("All"),
 
@@ -49,6 +50,7 @@ if ($Help) {
         "VaultPTASyslog"   = "Point Vault dbparm.ini [SYSLOG] at PTA (session monitoring); restarts Vault"
         "CreatePSMPVM"     = "Create PSMP01 Rocky Linux 9 VM via kickstart"
         "PSMPInstall"      = "Install and configure PSMP on PSMP01"
+        "CreateVaultADObjects" = "OPTIONAL: create AD OU + Vault role groups + users (for Vault LDAP)"
     }
     $w = ($stepInfo.Keys | Measure-Object Length -Maximum).Maximum + 2
     foreach ($s in $stepInfo.Keys) {
@@ -178,6 +180,14 @@ if ($allSteps -or $Steps -contains "DomainJoin") {
     Invoke-LabStep -StepName "DomainJoin" `
         -ScriptPath "$scriptsDir\05-DomainJoin.ps1" `
         -Description "Joining VMs to domain"
+}
+
+# OPTIONAL (opt-in only, never auto-run in All/Full): create + populate the AD
+# OU, Vault role groups, and users used for Vault LDAP integration.
+if ($Steps -contains "CreateVaultADObjects") {
+    Invoke-LabStep -StepName "CreateVaultADObjects" `
+        -ScriptPath "$scriptsDir\20-CreateVaultADObjects.ps1" `
+        -Description "Creating Vault AD OU, role groups, and users"
 }
 
 if ($allSteps -or $Steps -contains "VaultInstall") {
