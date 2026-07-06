@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-07-04
+
+### Added
+- `Deploy-Optional.ps1` — single menu/parameter-driven entry point for opt-in optional features, using supported tooling only (ActiveDirectory module + PVWA REST), idempotent, with WinRM retry and version-safe (PS 5.1/7) PVWA calls:
+  - **VaultADObjects** — AD OU + Vault role groups + users.
+  - **LDAPBindUser** — least-privilege AD bind user (List-Contents) stored as a PVWA account.
+  - **ReconcileAccount** — AD reconcile account (Reset-Password + pwdLastSet rights) stored in PVWA.
+  - **DiscoveryAccount** — AD accounts-discovery scan account (`svc-discovery`) stored in PVWA.
+  - **PTACertificates** / **VaultPTASyslog** — expose the PTA-certificate and Vault→PTA-syslog scripts as Deploy-Optional features (dispatch to the backend scripts).
+
+### Changed
+- Renamed `Scripts/11b-ConfigurePTACertificates.ps1` → `Scripts/Configure-PTACertificates.ps1` and `Scripts/11c-ConfigureVaultSyslogToPTA.ps1` → `Scripts/Configure-VaultSyslogToPTA.ps1` (drop the b/c suffix; now dispatched from `Deploy-Optional.ps1`).
+
+### Removed
+- `Scripts/20-CreateVaultADObjects.ps1` (folded into `Deploy-Optional.ps1`) and the `Deploy-Lab.ps1` `CreateVaultADObjects` + `VaultPTASyslog` steps — optional features now live in `Deploy-Optional.ps1`.
+
 ## [1.3.0] - 2026-07-04
 
 ### Added
@@ -49,6 +65,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - Master orchestrator `Deploy-Lab.ps1` with per-step execution.
 - Teardown script and helper modules.
 
+[1.4.0]: #140---2026-07-04
 [1.3.0]: #130---2026-07-04
 [1.2.0]: #120---2026-07-04
 [1.1.0]: #110---2026-07-04
