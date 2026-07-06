@@ -27,8 +27,8 @@
     (auditType_VAULT_LOGON increments; PVWA System Health shows the events).
 
     Usage:
-      .\11c-ConfigureVaultSyslogToPTA.ps1
-      .\11c-ConfigureVaultSyslogToPTA.ps1 -PrimaryPTAName PTA01 -SyslogPort 11514 -SyslogProtocol TCP
+      .\Configure-VaultSyslogToPTA.ps1
+      .\Configure-VaultSyslogToPTA.ps1 -PrimaryPTAName PTA01 -SyslogPort 11514 -SyslogProtocol TCP
 .NOTES
     Restarts PTA 'appmgr' and the 'PrivateArk Server' (Vault) service - brief downtime.
     Timestamped backups of both systemparm.properties and dbparm.ini are made first.

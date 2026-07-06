@@ -508,7 +508,7 @@ Write-Host "NEXT STEPS FOR FULL DR DEPLOYMENT" -ForegroundColor Cyan
 Write-Host ("=" * 80) -ForegroundColor Cyan
 
 Write-Host "`n[Step 1] Shared DNS A record (pta.cyberark.lab -> Primary IP)" -ForegroundColor Yellow
-Write-Host "  Created automatically by 11b-ConfigurePTACertificates.ps1 (Step 1b)." -ForegroundColor DarkGray
+Write-Host "  Created automatically by Configure-PTACertificates.ps1 (Step 1b)." -ForegroundColor DarkGray
 Write-Host "  Always points to the Primary IP only - NOT load balanced. Failover is" -ForegroundColor DarkGray
 Write-Host "  handled internally by the Vault dbparm.ini; external components always" -ForegroundColor DarkGray
 Write-Host "  talk to the Primary. The shared name must exist before setupPrimary.sh." -ForegroundColor DarkGray

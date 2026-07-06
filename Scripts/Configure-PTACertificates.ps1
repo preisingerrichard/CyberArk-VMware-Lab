@@ -17,10 +17,10 @@
 
     Usage:
       # Primary only:
-      .\11b-ConfigurePTACertificates.ps1 -PrimaryName PTA01
+      .\Configure-PTACertificates.ps1 -PrimaryName PTA01
 
       # Primary + Secondary (DR):
-      .\11b-ConfigurePTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02
+      .\Configure-PTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02
 
     Prerequisites:
     - PTA servers must be installed (11-InstallPTA-Primary.ps1 / 11-InstallPTA-Secondary.ps1)

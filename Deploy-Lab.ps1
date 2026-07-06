@@ -17,8 +17,7 @@ param(
     [ValidateSet(
         "All", "Full", "Prerequisites", "BaseVM", "DeployVMs", "DomainController",
         "DomainJoin", "VaultInstall", "PVWAInstall", "CPMInstall",
-        "PSMInstall", "CreatePTAVM", "PTAInstall", "VaultPTASyslog", "CreatePSMPVM", "PSMPInstall",
-        "CreateVaultADObjects"
+        "PSMInstall", "CreatePTAVM", "PTAInstall", "CreatePSMPVM", "PSMPInstall"
     )]
     [string[]]$Steps = @("All"),
 
@@ -47,10 +46,8 @@ if ($Help) {
         "PSMInstall"       = "Install PSM on COMP01 (register with Vault)"
         "CreatePTAVM"      = "Create PTA01 Rocky Linux 9 VM via kickstart"
         "PTAInstall"       = "Install and configure PTA on PTA01"
-        "VaultPTASyslog"   = "Point Vault dbparm.ini [SYSLOG] at PTA (session monitoring); restarts Vault"
         "CreatePSMPVM"     = "Create PSMP01 Rocky Linux 9 VM via kickstart"
         "PSMPInstall"      = "Install and configure PSMP on PSMP01"
-        "CreateVaultADObjects" = "OPTIONAL: create AD OU + Vault role groups + users (for Vault LDAP)"
     }
     $w = ($stepInfo.Keys | Measure-Object Length -Maximum).Maximum + 2
     foreach ($s in $stepInfo.Keys) {
@@ -182,14 +179,6 @@ if ($allSteps -or $Steps -contains "DomainJoin") {
         -Description "Joining VMs to domain"
 }
 
-# OPTIONAL (opt-in only, never auto-run in All/Full): create + populate the AD
-# OU, Vault role groups, and users used for Vault LDAP integration.
-if ($Steps -contains "CreateVaultADObjects") {
-    Invoke-LabStep -StepName "CreateVaultADObjects" `
-        -ScriptPath "$scriptsDir\20-CreateVaultADObjects.ps1" `
-        -Description "Creating Vault AD OU, role groups, and users"
-}
-
 if ($allSteps -or $Steps -contains "VaultInstall") {
     Invoke-LabStep -StepName "VaultInstall" `
         -ScriptPath "$scriptsDir\06-InstallVault.ps1" `
@@ -225,14 +214,6 @@ if ($Steps -contains "PTAInstall" -or $fullDeploy) {
     Invoke-LabStep -StepName "PTAInstall" `
         -ScriptPath "$scriptsDir\11-InstallPTA-Primary.ps1" `
         -Description "Installing CyberArk PTA Primary (Rocky Linux)"
-}
-
-# Point the Vault's syslog at PTA so PSM sessions are monitored. Runs after
-# PTAInstall in a Full deploy; also runnable on its own once PTA + Vault exist.
-if ($Steps -contains "VaultPTASyslog" -or $fullDeploy) {
-    Invoke-LabStep -StepName "VaultPTASyslog" `
-        -ScriptPath "$scriptsDir\11c-ConfigureVaultSyslogToPTA.ps1" `
-        -Description "Configuring Vault syslog forwarding to PTA"
 }
 
 if ($Steps -contains "CreatePSMPVM" -or $fullDeploy) {
