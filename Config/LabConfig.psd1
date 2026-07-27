@@ -28,6 +28,7 @@
         ClientFolder       = "Client\Client"
         PTAFolder          = "PTA"
         PSMPFolder         = "PSMP"
+        ConjurFolder       = "Conjur"
     }
 
     # === Network Configuration ===

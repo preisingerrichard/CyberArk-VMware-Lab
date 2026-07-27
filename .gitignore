@@ -18,6 +18,11 @@ Config/pta_lab_key
 Config/pta_lab_key.pub
 Config/psmp_lab_key
 Config/psmp_lab_key.pub
+Config/conjur_lab_key
+Config/conjur_lab_key.pub
+
+# ── Conjur native master keys (decrypt the whole cluster - never commit) ──
+Config/ConjurSecrets/
 
 # ── Windows null device (ssh.exe UserKnownHostsFile=NUL artifact) ─
 NUL
@@ -27,3 +32,6 @@ Logs/
 
 # ── Temp files ───────────────────────────────────────────────────
 *.tmp
+
+# ── Private client-engagement notes (never for GitHub) ────────────
+CLIENT-*.md

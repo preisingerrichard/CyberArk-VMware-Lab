@@ -25,7 +25,9 @@
 
 param(
     [ValidateSet("VaultADObjects", "LDAPBindUser", "ReconcileAccount", "DiscoveryAccount",
-                 "PTACertificates", "VaultPTASyslog")]
+                 "PTACertificates", "VaultPTASyslog", "ConjurNodes", "LoadBalancer", "ConjurSystemFolders",
+                 "ConjurAppliance", "ConjurDNS", "ConjurInstallLeader", "ConjurImportCertificates",
+                 "ConjurEncryptKeys", "ConjurInstallStandby")]
     [string[]]$Feature,
 
     [string]$ConfigPath = "$PSScriptRoot\Config\LabConfig.psd1",
@@ -62,6 +64,45 @@ param(
     [ValidateSet("TCP","UDP")]
     [string]$SyslogProtocol   = "TCP",
 
+    # ConjurNodes (dispatch to Scripts\30-CloneConjurNodes.ps1)
+    [ValidateSet("full","linked")]
+    [string]  $ConjurCloneType = "full",
+    [string[]]$ConjurNodeNames,                 # subset, e.g. CONJUR-S01,CONJUR-S02; default all
+    [string]  $ConjurGuestPass = "Cyberark1",   # CONJUR-L01 root password
+
+    # LoadBalancer (dispatch to Scripts\31-ConfigureLoadBalancer.ps1)
+    [string]  $LBTargetName = "CONJUR-APP01",
+    [array]   $LBPools,                          # default = the two Conjur pools (see script)
+    [string]  $LBGuestPass  = "Cyberark1",
+
+    # ConjurSystemFolders (dispatch to Scripts\32-CreateConjurSystemFolders.ps1)
+    [string[]]$ConjurFolderNodes,                 # default = L01+S01/S02/F01/F02 (see script)
+    [string]  $ConjurFolderGuestPass = "Cyberark1",
+
+    # ConjurAppliance (dispatch to Scripts\33-CopyConjurAppliance.ps1)
+    [string[]]$ConjurApplianceNodes,               # default = L01+S01/S02/F01/F02 (see script)
+    [string]  $ConjurApplianceGuestPass = "Cyberark1",
+    [switch]  $ConjurApplianceLoad,                # also podman-load + verify + clean up on the guest
+    [string[]]$ConjurCliNodes,                     # default = CONJUR-L01 only (see script)
+    [switch]  $ConjurSkipCli,                      # skip the Conjur CLI RPM install entirely
+
+    # ConjurInstallLeader (dispatch to Scripts\35-InstallConjurLeader.ps1)
+    [string]  $ConjurLeaderVMName    = "CONJUR-L01",
+    [string]  $ConjurContainerName   = "conjur",
+    [string]  $ConjurLeaderGuestPass = "Cyberark1",
+
+    # ConjurImportCertificates (dispatch to Scripts\36-ImportConjurCertificates.ps1)
+    [string]  $ConjurCertVMName    = "CONJUR-L01",
+    [string]  $ConjurCertGuestPass = "Cyberark1",
+
+    # ConjurEncryptKeys (dispatch to Scripts\37-EncryptConjurLeaderKeys.ps1)
+    [string]  $ConjurKeysVMName    = "CONJUR-L01",
+    [string]  $ConjurKeysGuestPass = "Cyberark1",
+
+    # ConjurInstallStandby (dispatch to Scripts\38-InstallConjurStandby.ps1)
+    [string]  $ConjurStandbyVMName,                    # required - e.g. CONJUR-S01
+    [string]  $ConjurStandbyGuestPass = "Cyberark1",
+
     [switch]$ListFeatures
 )
 
@@ -86,6 +127,15 @@ $catalogue = [ordered]@{
     DiscoveryAccount = "Create the accounts-discovery scan account in AD + PVWA"
     PTACertificates  = "Issue + install PTA CA certificates from DC01 (DR-ready)"
     VaultPTASyslog   = "Configure Vault -> PTA syslog forwarding (session monitoring)"
+    ConjurNodes      = "Clone CONJUR-L01 into the Conjur cluster nodes (S/F/APP)"
+    LoadBalancer     = "Configure HAProxy pools on a target node (default: Conjur leader+follower on APP01)"
+    ConjurSystemFolders = "Create /opt/cyberark/conjur system folders on Conjur nodes (deck Step 2)"
+    ConjurAppliance  = "Copy (+ optionally load) the Conjur appliance tarball onto Conjur nodes (deck Step 4)"
+    ConjurDNS        = "Create DC01 DNS A-records for the Conjur nodes + cluster/follower VIPs"
+    ConjurInstallLeader = "Create+start the Conjur Leader container on L01 (deck Step 6, real seccomp profile)"
+    ConjurImportCertificates = "Issue + import DC01 CA-signed leader/follower certs into the Conjur Leader (deck Step 8)"
+    ConjurEncryptKeys = "Encrypt the Conjur Leader's server keys with a native master key (deck Step 3, optional)"
+    ConjurInstallStandby = "Create + configure a Conjur Standby (container, seed transfer, evoke configure standby) - pass -ConjurStandbyVMName"
 }
 
 if ($ListFeatures) {
@@ -307,6 +357,123 @@ function Invoke-VaultPTASyslog {
     & "$PSScriptRoot\Scripts\Configure-VaultSyslogToPTA.ps1" -PrimaryPTAName $PTAPrimaryName -SyslogPort $SyslogPort -SyslogProtocol $SyslogProtocol
 }
 
+# ================================================================
+# Feature: ConjurNodes  (dispatch to Scripts\30-CloneConjurNodes.ps1)
+#   Clones the hand-built CONJUR-L01 leader into S01/S02/F01/F02/LB01/APP01.
+#   Template prereqs (power-off, snapshot) are automated; each clone is
+#   generalized post-clone so L01 itself is never modified.
+# ================================================================
+function Invoke-ConjurNodes {
+    Write-Host "`n### ConjurNodes ###" -ForegroundColor Cyan
+    $splat = @{ CloneType = $ConjurCloneType; GuestPass = $ConjurGuestPass }
+    if ($ConjurNodeNames) { $splat.Nodes = $ConjurNodeNames }
+    & "$PSScriptRoot\Scripts\30-CloneConjurNodes.ps1" @splat
+}
+
+# ================================================================
+# Feature: LoadBalancer  (dispatch to Scripts\31-ConfigureLoadBalancer.ps1)
+#   Generic HAProxy pool configurator. Default wires the Conjur
+#   leader+follower pools on CONJUR-APP01; pass -LBPools for any other
+#   target (PVWA, PSM/PSMP, etc.) with no code changes.
+# ================================================================
+function Invoke-LoadBalancer {
+    Write-Host "`n### LoadBalancer ###" -ForegroundColor Cyan
+    $splat = @{ TargetName = $LBTargetName; GuestPass = $LBGuestPass }
+    if ($LBPools) { $splat.Pools = $LBPools }
+    & "$PSScriptRoot\Scripts\31-ConfigureLoadBalancer.ps1" @splat
+}
+
+# ================================================================
+# Feature: ConjurSystemFolders  (dispatch to Scripts\32-CreateConjurSystemFolders.ps1)
+#   Creates /opt/cyberark/conjur/{security,config,backup,seeds,logs} on the
+#   Conjur appliance nodes (Leader/Standbys/Followers - not APP01).
+# ================================================================
+function Invoke-ConjurSystemFolders {
+    Write-Host "`n### ConjurSystemFolders ###" -ForegroundColor Cyan
+    $splat = @{ GuestPass = $ConjurFolderGuestPass }
+    if ($ConjurFolderNodes) { $splat.VMNames = $ConjurFolderNodes }
+    & "$PSScriptRoot\Scripts\32-CreateConjurSystemFolders.ps1" @splat
+}
+
+# ================================================================
+# Feature: ConjurAppliance  (dispatch to Scripts\33-CopyConjurAppliance.ps1)
+#   Copies the Conjur appliance tarball (SCP, not guest-ops - too large for
+#   the VIX channel) onto the Conjur nodes; -ConjurApplianceLoad also runs
+#   podman load + verify + cleanup on the guest.
+# ================================================================
+function Invoke-ConjurAppliance {
+    Write-Host "`n### ConjurAppliance ###" -ForegroundColor Cyan
+    $splat = @{ GuestPass = $ConjurApplianceGuestPass }
+    if ($ConjurApplianceNodes) { $splat.VMNames = $ConjurApplianceNodes }
+    if ($ConjurApplianceLoad) { $splat.Load = $true }
+    if ($ConjurCliNodes) { $splat.CliVMNames = $ConjurCliNodes }
+    if ($ConjurSkipCli) { $splat.SkipCli = $true }
+    & "$PSScriptRoot\Scripts\33-CopyConjurAppliance.ps1" @splat
+}
+
+# ================================================================
+# Feature: ConjurDNS  (dispatch to Scripts\34-ConfigureConjurDNS.ps1)
+#   Creates the DC01 A-records the Conjur cluster needs (node hostnames +
+#   cluster/follower VIPs) - deck's DNS prerequisite for evoke configure.
+# ================================================================
+function Invoke-ConjurDNS {
+    Write-Host "`n### ConjurDNS ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\34-ConfigureConjurDNS.ps1"
+}
+
+# ================================================================
+# Feature: ConjurInstallLeader  (dispatch to Scripts\35-InstallConjurLeader.ps1)
+#   Creates + starts the Conjur Leader container with a real (not
+#   unconfined) seccomp profile extracted from the loaded image. Does NOT
+#   run evoke configure - that needs cluster/admin decisions confirmed
+#   first (see CLIENT-CONJUR-INSTALL-CHECKLIST.md).
+# ================================================================
+function Invoke-ConjurInstallLeader {
+    Write-Host "`n### ConjurInstallLeader ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\35-InstallConjurLeader.ps1" -VMName $ConjurLeaderVMName `
+        -ContainerName $ConjurContainerName -GuestPass $ConjurLeaderGuestPass
+}
+
+# ================================================================
+# Feature: ConjurImportCertificates  (dispatch to Scripts\36-ImportConjurCertificates.ps1)
+#   Issues leader+follower certs from the DC01 Enterprise CA (WebServer
+#   template - already SAN+clientAuth capable via PTACertificates prep) and
+#   runs evoke ca import on the Leader (deck Step 8).
+# ================================================================
+function Invoke-ConjurImportCertificates {
+    Write-Host "`n### ConjurImportCertificates ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\36-ImportConjurCertificates.ps1" -VMName $ConjurCertVMName `
+        -ContainerName $ConjurContainerName -GuestPass $ConjurCertGuestPass
+}
+
+# ================================================================
+# Feature: ConjurEncryptKeys  (dispatch to Scripts\37-EncryptConjurLeaderKeys.ps1)
+#   Encrypts the Leader's server keys with a native master key (deck Step 3,
+#   optional but strongly recommended). Idempotent - re-running skips
+#   generation if a key already exists but always re-runs the unlock, which
+#   is required after every container/host restart.
+# ================================================================
+function Invoke-ConjurEncryptKeys {
+    Write-Host "`n### ConjurEncryptKeys ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\37-EncryptConjurLeaderKeys.ps1" -VMName $ConjurKeysVMName `
+        -ContainerName $ConjurContainerName -GuestPass $ConjurKeysGuestPass
+}
+
+# ================================================================
+# Feature: ConjurInstallStandby  (dispatch to Scripts\38-InstallConjurStandby.ps1)
+#   Creates + fully configures a Standby (container, seed transfer from the
+#   Leader, evoke configure standby). Requires -ConjurStandbyVMName. Not
+#   idempotent-skippable for seed transfer/configure - only container
+#   creation and the overall run are idempotent (checks evoke's own role
+#   marker first).
+# ================================================================
+function Invoke-ConjurInstallStandby {
+    if (-not $ConjurStandbyVMName) { throw "ConjurInstallStandby requires -ConjurStandbyVMName (e.g. CONJUR-S01)" }
+    Write-Host "`n### ConjurInstallStandby: $ConjurStandbyVMName ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\38-InstallConjurStandby.ps1" -StandbyVMName $ConjurStandbyVMName `
+        -ContainerName $ConjurContainerName -GuestPass $ConjurStandbyGuestPass
+}
+
 # ---- menu (when no -Feature given) -------------------------------
 if (-not $Feature) {
     Write-Host "`nOptional CyberArk lab features:" -ForegroundColor Cyan
@@ -329,6 +496,15 @@ foreach ($f in $Feature) {
         "DiscoveryAccount" { Invoke-DiscoveryAccount }
         "PTACertificates"  { Invoke-PTACertificates }
         "VaultPTASyslog"   { Invoke-VaultPTASyslog }
+        "ConjurNodes"      { Invoke-ConjurNodes }
+        "LoadBalancer"     { Invoke-LoadBalancer }
+        "ConjurSystemFolders" { Invoke-ConjurSystemFolders }
+        "ConjurAppliance"  { Invoke-ConjurAppliance }
+        "ConjurDNS"        { Invoke-ConjurDNS }
+        "ConjurInstallLeader" { Invoke-ConjurInstallLeader }
+        "ConjurImportCertificates" { Invoke-ConjurImportCertificates }
+        "ConjurEncryptKeys" { Invoke-ConjurEncryptKeys }
+        "ConjurInstallStandby" { Invoke-ConjurInstallStandby }
     }
 }
 Write-Host "`nDone." -ForegroundColor Green
