@@ -435,7 +435,7 @@ To pair a Primary + Secondary PTA with MongoDB replication, follow [Scripts/READ
 <a id="conjur-cluster-deploy"></a>
 ### Conjur Enterprise cluster (optional add-on)
 
-**Read the [Conjur Enterprise prerequisites](#conjur-prereqs) above first** — a Red Hat subscription, a hand-built `CONJUR-L01` VM, and marketplace-only media are all required before script 30 will do anything useful.
+**Read the [Conjur Enterprise prerequisites](#conjur-prereqs) above first** — a Red Hat subscription/activation key (for Script 29) or a hand-built `CONJUR-L01` VM, plus marketplace-only media, are all required before script 30 will do anything useful.
 
 Once `CONJUR-L01` exists (RHEL 9, static IP `192.168.100.60`, `open-vm-tools` running — either via Script 29, untested, or hand-built, see above) and `Installers\Conjur\` has the appliance tarball + CLI RPM, the rest is scripted, in this order:
 
