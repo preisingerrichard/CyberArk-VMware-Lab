@@ -21,7 +21,6 @@ param(
     )]
     [string[]]$Steps = @("All"),
 
-    [switch]$NoGUI,
     [switch]$Help,
     [string]$ConfigPath = "$PSScriptRoot\Config\LabConfig.psd1"
 )

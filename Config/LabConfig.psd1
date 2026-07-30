@@ -12,6 +12,11 @@
     ISOs = @{
         WindowsServer = "F:\VMWare\CyberArk-VMware-Lab\ISO\SERVER_EVAL_x64FRE_en-us.iso"
         RockyLinux    = "F:\VMWare\CyberArk-VMware-Lab\ISO\Rocky-9.7-x86_64-minimal.iso"
+        # RHEL 9.2+ required (kickstart-time `rhsm` registration command needs it).
+        # Not freely downloadable like the two above - requires a Red Hat account
+        # (a free Red Hat Developer subscription is enough). Only needed for the
+        # optional Conjur add-on's CONJUR-L01 (Scripts\29-CreateConjurL01VM.ps1).
+        RHEL9         = "F:\VMWare\CyberArk-VMware-Lab\ISO\rhel-9.4-x86_64-dvd.iso"
     }
 
     # === CyberArk Installation Media ===

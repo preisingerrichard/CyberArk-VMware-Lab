@@ -1,0 +1,35 @@
+# Creates the conjur-admins group. Membership includes the built-in `admin`
+# user for now (this lab has no other Conjur-authenticated human identity
+# yet - no LDAP/SAML/OIDC in scope). Referenced INLINE inside the !grant
+# only - never declared standalone as `- !user admin` in this file. `admin`
+# already exists as a foundational, pre-policy account-level object; a
+# standalone declaration would attempt to re-parent it as a child of this
+# branch, which is not the intent.
+#
+# The actual delegation of root administration (the !permit granting this
+# group [read,create,update] on the root policy itself) lives in root.yml,
+# NOT here - real constraint, not a style choice: Conjur's YAML resolver
+# has no syntax to reference the top-level root policy object from a
+# nested-branch load (`!policy /` errors "Illegal absolute id: /" - the
+# root policy's own id IS "root", but "root" unqualified inside a load
+# targeting a different branch resolves relative to THAT branch instead,
+# e.g. bare "root" loaded via `-b admins` resolves to "admins/root", not
+# top-level root). Only a load targeting `-b root` itself can bare-reference
+# "root" and have it self-resolve to the account root - confirmed live
+# against this CLI/appliance version (v9 conjur-cli-go / 13.9.0), matching
+# CyberArk's own official example which does exactly that (its !permit on
+# root lives in root.yml, loaded -b root, not in a separate admins file).
+#
+# Load with: conjur policy update -b admins -f admins.yml
+# Safe to re-run any time - e.g. to add another named admin user later,
+# just add another !grant block below and re-run.
+
+- !group
+  id: conjur-admins
+  owner: !group conjur-admins
+  annotations:
+    description: Delegated Conjur root administrators - self-owning, only members can change membership
+
+- !grant
+  role: !group conjur-admins
+  member: !user /admin

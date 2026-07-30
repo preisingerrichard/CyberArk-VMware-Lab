@@ -1,0 +1,57 @@
+# Re-declares the same three branches created by root-bootstrap.yml, this
+# time WITH an explicit owner - closes the implicit-inheritance gap left
+# by the bootstrap load (those branches temporarily inherited ownership
+# from root/the admin user until this runs). Requires admins/conjur-admins
+# to already exist - admins.yml must be loaded first.
+#
+# Also carries the !permit delegating root administration to conjur-admins
+# ([read,create,update] on root itself, NOT an owner reassignment - root's
+# own owner: stays the built-in admin user, untouched). This has to live
+# here rather than in admins.yml: Conjur's YAML resolver has no syntax to
+# reference the top-level root policy object from a load targeting a
+# different branch (see admins.yml's header for the full explanation) -
+# only a load targeting -b root itself can bare-reference "root" and have
+# it self-resolve to the account root, matching CyberArk's own official
+# example exactly (their !permit on root lives in the file loaded -b root).
+#
+# Load with: conjur policy update -b root -f root.yml
+# Safe to re-run any time - idempotent, always re-applies the same owner
+# and permit.
+#
+# Whether `update` genuinely re-parents an EXISTING object's owner
+# attribute (as opposed to only setting it at creation time) is the one
+# part of this whole design that was not verifiable without touching the
+# live cluster - Scripts\41's own verification step confirms this landed
+# correctly on first real run. Don't trust this file alone; trust the
+# script's post-run check.
+#
+# Root also has a 4th real child, `vault01` (+ vault01/secrets), created
+# automatically by the Vault-Conjur Synchronizer installer. It is
+# deliberately NOT declared here - left alone entirely, matching
+# root-bootstrap.yml's same note.
+
+- !policy
+  id: admins
+  owner: !group admins/conjur-admins
+  annotations:
+    description: Conjur administration - the conjur-admins group and root delegation
+  body: []
+
+- !policy
+  id: apps
+  owner: !group admins/conjur-admins
+  annotations:
+    description: Parent container for one sub-branch per application/workload (e.g. apps/gitlab)
+  body: []
+
+- !policy
+  id: ops
+  owner: !group admins/conjur-admins
+  annotations:
+    description: Lab-internal operational secrets not tied to a specific app or team
+  body: []
+
+- !permit
+  role: !group admins/conjur-admins
+  privileges: [ read, create, update ]
+  resource: !policy root

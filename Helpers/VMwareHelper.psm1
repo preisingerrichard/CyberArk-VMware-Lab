@@ -490,7 +490,7 @@ function Invoke-LinuxGuestScript {
             "-gu", $GuestUser, "-gp", $GuestPassword,
             "runProgramInGuest", "$VMXPath",
             "/bin/bash", "-c", "chmod +x $tempGuestPath && $tempGuestPath ; echo \$? > ${tempGuestPath}.rc"
-        ) -TimeoutSeconds $TimeoutSeconds -NoThrow
+        ) -TimeoutSeconds $TimeoutSeconds -NoThrow:$NoThrow
 
         return $result
     } finally {

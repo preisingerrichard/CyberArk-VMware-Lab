@@ -188,7 +188,7 @@ function Get-LabDNSStatus {
     }
 
     try {
-        $result = Resolve-DnsName -Name $domain -Server $dns -ErrorAction Stop
+        Resolve-DnsName -Name $domain -Server $dns -ErrorAction Stop | Out-Null
         Write-Host "  Domain $domain resolved OK" -ForegroundColor Green
         return $true
     }

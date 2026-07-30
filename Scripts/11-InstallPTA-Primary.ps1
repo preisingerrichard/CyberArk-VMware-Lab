@@ -99,7 +99,6 @@ if (-not (Test-Path $labKeyPath)) {
 $labPubKey = Get-Content "$labKeyPath.pub" -Raw
 
 foreach ($ptaVM in $ptaVMs) {
-    $ptaVMX    = Join-Path $Config.VMware.DefaultVMFolder "$($ptaVM.Name)\$($ptaVM.Name).vmx"
     $ptaIP     = $ptaVM.IPAddress
     $ptaPort   = $CAConfig.PTA.APIPort
 

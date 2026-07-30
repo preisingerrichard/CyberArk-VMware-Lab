@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-    Generalize the hand-built CONJUR-L01 base image (RHEL 9 "sysprep"), then
-    clone it into the remaining Conjur nodes and personalize each one.
+    Generalize the CONJUR-L01 base image (RHEL 9 "sysprep") - built either by
+    Scripts\29-CreateConjurL01VM.ps1 or by hand - then clone it into the
+    remaining Conjur nodes and personalize each one.
 .DESCRIPTION
     UNTESTED - first validation run pending (smoke test: -Nodes CONJUR-S01).
 

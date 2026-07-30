@@ -27,7 +27,8 @@ param(
     [ValidateSet("VaultADObjects", "LDAPBindUser", "ReconcileAccount", "DiscoveryAccount",
                  "PTACertificates", "VaultPTASyslog", "ConjurNodes", "LoadBalancer", "ConjurSystemFolders",
                  "ConjurAppliance", "ConjurDNS", "ConjurInstallLeader", "ConjurImportCertificates",
-                 "ConjurEncryptKeys", "ConjurInstallStandby")]
+                 "ConjurEncryptKeys", "ConjurInstallStandby", "ConjurInstallFollower",
+                 "VaultConjurSynchronizer", "ConjurLoadRootPolicy")]
     [string[]]$Feature,
 
     [string]$ConfigPath = "$PSScriptRoot\Config\LabConfig.psd1",
@@ -103,6 +104,18 @@ param(
     [string]  $ConjurStandbyVMName,                    # required - e.g. CONJUR-S01
     [string]  $ConjurStandbyGuestPass = "Cyberark1",
 
+    # ConjurInstallFollower (dispatch to Scripts\39-InstallConjurFollower.ps1)
+    [string]  $ConjurFollowerVMName,                   # required - e.g. CONJUR-F01
+    [string]  $ConjurFollowerGuestPass = "Cyberark1",
+
+    # VaultConjurSynchronizer (dispatch to Scripts\40-InstallVaultConjurSynchronizer.ps1)
+    [string]  $SynchronizerPlatformZipPath,             # required only if the target platform is missing from the Vault
+    [switch]  $SynchronizerForce,
+
+    # ConjurLoadRootPolicy (dispatch to Scripts\41-LoadConjurRootPolicy.ps1)
+    [string]  $ConjurPolicyVMName = "CONJUR-L01",
+    [string]  $ConjurPolicyGuestPass = "Cyberark1",
+
     [switch]$ListFeatures
 )
 
@@ -136,6 +149,9 @@ $catalogue = [ordered]@{
     ConjurImportCertificates = "Issue + import DC01 CA-signed leader/follower certs into the Conjur Leader (deck Step 8)"
     ConjurEncryptKeys = "Encrypt the Conjur Leader's server keys with a native master key (deck Step 3, optional)"
     ConjurInstallStandby = "Create + configure a Conjur Standby (container, seed transfer, evoke configure standby) - pass -ConjurStandbyVMName"
+    ConjurInstallFollower = "Create + configure a Conjur Follower (container, shared-identity seed transfer, evoke configure follower) - pass -ConjurFollowerVMName"
+    VaultConjurSynchronizer = "Install the Vault-Conjur Synchronizer on COMP01 (LOB sync of a Vault safe into Conjur) - pass -SynchronizerPlatformZipPath if the target Vault platform doesn't exist yet"
+    ConjurLoadRootPolicy = "Bootstrap Conjur's root policy (admins/apps/ops branches, conjur-admins group delegated on root) - see Policies\ folder"
 }
 
 if ($ListFeatures) {
@@ -183,7 +199,7 @@ function Invoke-VaultADObjects {
         @{ Group="Lab-Vault-SafeManagers"; Prefix="vault_safemgr" }
     )
     $out = Invoke-DC -ArgumentList $domain, $OUName, $roles, $UsersPerGroup, $UserPassword -Script {
-        param($domain, $OUName, $roles, $count, $password, $pwdNever = $true)
+        param($domain, $OUName, $roles, $count, $password)
         Import-Module ActiveDirectory -ErrorAction Stop
         $log = New-Object System.Collections.Generic.List[string]
         $baseDN = ($domain.Split('.') | ForEach-Object { "DC=$_" }) -join ','
@@ -474,6 +490,46 @@ function Invoke-ConjurInstallStandby {
         -ContainerName $ConjurContainerName -GuestPass $ConjurStandbyGuestPass
 }
 
+# ================================================================
+# Feature: ConjurInstallFollower  (dispatch to Scripts\39-InstallConjurFollower.ps1)
+#   Creates + fully configures a Follower. Requires -ConjurFollowerVMName.
+#   Uses the shared Follower group identity for seeding, not the node's own
+#   name - see script header for why that distinction matters.
+# ================================================================
+function Invoke-ConjurInstallFollower {
+    if (-not $ConjurFollowerVMName) { throw "ConjurInstallFollower requires -ConjurFollowerVMName (e.g. CONJUR-F01)" }
+    Write-Host "`n### ConjurInstallFollower: $ConjurFollowerVMName ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\39-InstallConjurFollower.ps1" -FollowerVMName $ConjurFollowerVMName `
+        -ContainerName $ConjurContainerName -GuestPass $ConjurFollowerGuestPass
+}
+
+# ================================================================
+# Feature: VaultConjurSynchronizer  (dispatch to Scripts\40-InstallVaultConjurSynchronizer.ps1)
+#   Installs the Vault-Conjur Synchronizer on COMP01. See the script's own
+#   header for the IE-first-launch and missing-platform gaps this handles,
+#   and the caveats around its non-interactive install automation.
+# ================================================================
+function Invoke-VaultConjurSynchronizer {
+    Write-Host "`n### VaultConjurSynchronizer ###" -ForegroundColor Cyan
+    $splat = @{}
+    if ($SynchronizerPlatformZipPath) { $splat.PlatformZipPath = $SynchronizerPlatformZipPath }
+    if ($SynchronizerForce) { $splat.Force = $true }
+    & "$PSScriptRoot\Scripts\40-InstallVaultConjurSynchronizer.ps1" @splat
+}
+
+# ================================================================
+# Feature: ConjurLoadRootPolicy  (dispatch to Scripts\41-LoadConjurRootPolicy.ps1)
+#   Bootstraps admins/apps/ops branch stubs under root, creates the
+#   self-owning conjur-admins group, and permits it [read,create,update]
+#   on root itself (root's own owner: stays the admin user, untouched).
+#   See Policies\*.yml and the script header for the two-pass load order
+#   and the branch-scoped id-resolution rules that constrain it.
+# ================================================================
+function Invoke-ConjurLoadRootPolicy {
+    Write-Host "`n### ConjurLoadRootPolicy ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\41-LoadConjurRootPolicy.ps1" -LeaderVMName $ConjurPolicyVMName -GuestPass $ConjurPolicyGuestPass
+}
+
 # ---- menu (when no -Feature given) -------------------------------
 if (-not $Feature) {
     Write-Host "`nOptional CyberArk lab features:" -ForegroundColor Cyan
@@ -505,6 +561,9 @@ foreach ($f in $Feature) {
         "ConjurImportCertificates" { Invoke-ConjurImportCertificates }
         "ConjurEncryptKeys" { Invoke-ConjurEncryptKeys }
         "ConjurInstallStandby" { Invoke-ConjurInstallStandby }
+        "ConjurInstallFollower" { Invoke-ConjurInstallFollower }
+        "VaultConjurSynchronizer" { Invoke-VaultConjurSynchronizer }
+        "ConjurLoadRootPolicy" { Invoke-ConjurLoadRootPolicy }
     }
 }
 Write-Host "`nDone." -ForegroundColor Green

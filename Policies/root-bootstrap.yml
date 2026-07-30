@@ -1,0 +1,39 @@
+# One-time bootstrap: creates admins/apps/ops as empty branch stubs, with
+# no owner override yet - they temporarily inherit ownership from root
+# (the admin user). This is an expected, harmless intermediate state, not
+# a design flaw: admins/conjur-admins doesn't exist yet at this point, so
+# there's nothing valid to set as owner. Scripts\41-LoadConjurRootPolicy.ps1
+# closes this gap in its next step by re-applying root.yml (below), which
+# gives each branch its real, explicit owner once the admin group exists.
+#
+# Load with: conjur policy load -b root -f root-bootstrap.yml
+#
+# Run ONCE only. Re-running after admins/conjur-admins already exists is
+# unnecessary (these three branches already exist by then) - the script
+# guards this with an idempotency check, don't run this file manually
+# outside that script without checking current state first.
+#
+# Root also has a 4th real child, `vault01` (+ vault01/secrets), created
+# automatically by the Vault-Conjur Synchronizer installer. It is
+# deliberately NOT declared anywhere in this policy set - left alone
+# entirely. Omitting it from `load`/`update` calls is safe (neither verb
+# deletes unlisted objects - only `conjur policy replace` does, and this
+# design never uses `replace` against root).
+
+- !policy
+  id: admins
+  annotations:
+    description: Conjur administration - the conjur-admins group and root delegation
+  body: []
+
+- !policy
+  id: apps
+  annotations:
+    description: Parent container for one sub-branch per application/workload (e.g. apps/gitlab)
+  body: []
+
+- !policy
+  id: ops
+  annotations:
+    description: Lab-internal operational secrets not tied to a specific app or team
+  body: []

@@ -35,3 +35,10 @@ Logs/
 
 # ── Private client-engagement notes (never for GitHub) ────────────
 CLIENT-*.md
+
+# ── App-specific Conjur policy test content (never for GitHub) ────
+# Repo's own contribution stops at loading the root policy
+# (Scripts\41-LoadConjurRootPolicy.ps1). Real app/workload policy
+# (apps/gitlab, apps/k8s, etc.) is client-representative test content,
+# not a generic lab feature.
+AppPolicyTesting/

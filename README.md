@@ -14,12 +14,16 @@ Automated deployment of a full CyberArk self-hosted environment on VMware Workst
 | PTA01 | Privileged Threat Analytics (Primary) | 192.168.100.40 | 8 GB | 60 GB | Rocky Linux 9 |
 | PTA02 | Privileged Threat Analytics (Secondary / DR) | 192.168.100.41 | 8 GB | 60 GB | Rocky Linux 9 |
 | PSMP01 | PSM for SSH Proxy | 192.168.100.50 | 4 GB | 40 GB | Rocky Linux 9 |
+| CONJUR-L01 | Conjur Enterprise Leader | 192.168.100.60 | 2 vCPU / 4 GB | 20 GB | RHEL 9 |
+| CONJUR-S01 / S02 | Conjur Standby ×2 | 192.168.100.61 / .62 | 2 vCPU / 4 GB | 20 GB | RHEL 9 |
+| CONJUR-F01 / F02 | Conjur Follower ×2 | 192.168.100.65 / .66 | 2 vCPU / 4 GB | 20 GB | RHEL 9 |
+| CONJUR-APP01 | HAProxy LB + demo GitLab runner/k3s workload | 192.168.100.70 | 4 vCPU / 6 GB | 40 GB | RHEL 9 |
 
 **Network:** VMnet8 (NAT), subnet `192.168.100.0/24`  
 **Domain:** `cyberark.lab`  
 **PVWA:** `https://comp01.cyberark.lab/PasswordVault/v10/logon/cyberark`
 
-> PTA01, PTA02, and PSMP01 are optional. The base lab (DC01 + VAULT01 + COMP01) deploys without them. PTA02 is only needed to test PTA Disaster Recovery — see [Scripts/README-PTA-DR.md](Scripts/README-PTA-DR.md).
+> PTA01, PTA02, PSMP01, and the entire Conjur cluster are optional. The base lab (DC01 + VAULT01 + COMP01) deploys without any of them. PTA02 is only needed to test PTA Disaster Recovery — see [Scripts/README-PTA-DR.md](Scripts/README-PTA-DR.md). The Conjur cluster is a separate opt-in add-on — see [Conjur Enterprise cluster (optional add-on)](#conjur-cluster-deploy) below, and read its prerequisites carefully before starting: **Conjur needs a real RHEL subscription and marketplace-only media that no script can substitute for**, and `CONJUR-L01`'s own unattended-install script (`29-CreateConjurL01VM.ps1`) is untested.
 
 > **PTA VMs require 8 GB RAM each.** At 4 GB the post-install JVM utilities (CSR generation, DR wizards) run out of heap and hang once all PTA services are running.
 
@@ -144,6 +148,30 @@ Installers\
 └── License\
     └── License.xml
 ```
+
+<a id="conjur-prereqs"></a>
+### Conjur Enterprise (optional add-on) — read before starting
+
+The Conjur cluster has real prerequisites the rest of this lab doesn't, some of which cannot be fully automated or freely obtained. **Do not start the Conjur scripts expecting the same zero-manual-steps experience as the rest of this repo.**
+
+- **A Red Hat subscription (or equivalent RHEL entitlement) — unavoidable, cannot be scripted around.** Conjur nodes run **RHEL 9**, not Rocky Linux — `dnf install podman` and friends need RHSM-registered channels. Rocky's freely-downloadable ISO does not work here. A free [Red Hat Developer](https://developers.redhat.com/) account is enough for lab/personal use and gets you both the RHEL 9.2+ ISO and an activation key (needed below); there is no way around creating one.
+- **`CONJUR-L01`'s OS install is now scripted** — `Scripts\29-CreateConjurL01VM.ps1` (kickstart, same proven mechanism as `10-CreatePTAVM.ps1`/`12-CreatePSMPVM.ps1`, RHEL and Rocky share the same installer). **This script is genuinely untested** (no RHEL ISO + activation key were available to exercise it against yet — see its own header for exactly which parts are high-confidence vs. unverified). What it needs from you:
+  ```powershell
+  .\Scripts\29-CreateConjurL01VM.ps1 -OrgId <your-org-id> -ActivationKey <your-key>
+  ```
+  - The RHEL 9.2+ ISO, placed per `Config\LabConfig.psd1`'s `ISOs.RHEL9` path.
+  - A Red Hat activation key (`-OrgId`/`-ActivationKey`) — create one at [console.redhat.com/insights/connector/activation-keys](https://console.redhat.com/insights/connector/activation-keys), free with a Developer account. Registration happens *during* the unattended install (kickstart's `rhsm` command, RHEL 9.2+) so `open-vm-tools`/`podman` can install from subscribed repos in the same pass — without it, Script 30 has nothing to talk to (guest-ops needs `open-vm-tools` running, and RHEL has no unauthenticated repos to install it from).
+
+  If you'd rather not obtain an activation key, or the script doesn't work against your particular ISO point release, the fallback is what this repo did originally: hand-build a RHEL 9 VM (`CONJUR-L01`, static IP `192.168.100.60`, `open-vm-tools` running, root password matching `-GuestPass`) yourself, then start straight at Script 30.
+
+  Script 30 then generalizes L01 (subscription-manager unregister, machine-id/SSH-host-key reset, hostname reset) and clones it into S01/S02/F01/F02/APP01 — that part is automated and has been run successfully.
+- **`subscription-manager register` on every *clone* (S01/S02/F01/F02/APP01) is still manual, on purpose.** Script 29 only registers `CONJUR-L01` itself — generalizing/cloning doesn't re-run a kickstart, so each clone needs its own registration afterward. `Scripts\Register-RHSM.ps1` automates the *mechanics* (drives it over guest-ops, avoids leaking your password into process lists) but still needs **your own Red Hat credentials or activation key** — there's no way to script around needing a real account.
+- **The Conjur Enterprise appliance tarball (`conjur-appliance-*.tar.gz`, ~680 MB) and Conjur CLI RPM are not included and cannot be redistributed.** Download them yourself from the [CyberArk Marketplace](https://marketplace.cyberark.com) (same account you use for the PAM installers) and place them at `Installers\Conjur\` — `Scripts\33-CopyConjurAppliance.ps1` picks them up from there.
+- **The Vault-Conjur Synchronizer feature needs two more marketplace-only pieces**, only if you want that specific feature (everything else works without it):
+  - The Synchronizer installer media itself (`V5SynchronizerInstallation.ps1` and friends) — staged manually, path passed via `-SynchronizerInstallerPath`.
+  - The **"CyberArk Digital Vault"** PVWA platform (`PolicyID: CyberArkDigitalVault`) — this lab's Vault does not ship it by default. Download the platform zip from the Marketplace and either import it into PVWA yourself first, or pass `-SynchronizerPlatformZipPath` and `Scripts\40-InstallVaultConjurSynchronizer.ps1` imports it via REST. **This package's license does not permit redistribution — it can never be committed to this repo, gitignored or not.**
+
+None of this is scriptable away — it's how CyberArk licenses this software. Everything else about the Conjur add-on (cloning, networking, HAProxy, DNS, certificates, cluster configuration, root policy) is fully automated once these pieces are in place.
 
 ### Silent Install Response Files
 
@@ -326,6 +354,25 @@ Exposed as the **`VaultPTASyslog`** feature of `Deploy-Optional.ps1`; also runna
 - Copies PSMP installer to PSMP01 via SCP
 - Installs PSMP and registers it with Vault
 
+### Conjur Enterprise cluster (`Scripts\30`–`41`, optional add-on)
+
+> `CONJUR-L01` itself needs either `29-CreateConjurL01VM.ps1` (untested, needs a Red Hat activation key) or a hand-built RHEL 9 VM — see the [prerequisites](#conjur-prereqs) above.
+
+- **`29-CreateConjurL01VM.ps1`** — **UNTESTED.** Unattended RHEL 9 kickstart install of `CONJUR-L01` (same isolinux-Tab-injection mechanism as `10-CreatePTAVM.ps1`/`12-CreatePSMPVM.ps1`), including kickstart-time RHSM registration (`rhsm --organization=... --activation-key=...`) so `open-vm-tools`/`podman` install from subscribed repos during the same pass. Needs `-OrgId`/`-ActivationKey` and the RHEL 9.2+ ISO — see prerequisites. Verifies registration/package install actually landed before declaring success, since a bad org/key fails silently otherwise (installer finishes regardless, just without the packages).
+- **`30-CloneConjurNodes.ps1`** — generalizes `CONJUR-L01` (subscription-manager unregister, machine-id/SSH-host-key reset, snapshot `generalized`), clones it into S01/S02/F01/F02/APP01, personalizes hostname/IP on each, grows APP01's root filesystem to its larger disk.
+- **`Register-RHSM.ps1`** — registers L01 + every clone with Red Hat subscription-manager over guest-ops. Credentials collected once via `Get-Credential` (never touches shell history, disk, or process argv); `-OrgId`/`-ActivationKey` avoids using a personal password entirely.
+- **`31-ConfigureLoadBalancer.ps1`** *(feature `LoadBalancer`)* — generic, reusable HAProxy pool configurator. Writes idempotent per-pool config blocks, opens firewalld ports, sets SELinux port labels, always restarts (never reloads — a silent-reload bug was found and fixed here). Not Conjur-specific; used here for the leader pool (equal-priority backends + `/health` HTTP check, matching official Conjur LB guidance) and follower pool (plain TCP check) on `CONJUR-APP01`.
+- **`32-CreateConjurSystemFolders.ps1`** *(feature `ConjurSystemFolders`)* — creates `/opt/cyberark/conjur/{security,config,backup,seeds,logs}` on every appliance node (not APP01).
+- **`33-CopyConjurAppliance.ps1`** *(feature `ConjurAppliance`)* — real SCP (not guest-ops — the ~680 MB tarball is too large for VIX file transfer), bootstraps SSH key trust first. `-Load` also runs `podman load` + verification. Also stages the Conjur CLI RPM on nodes needing interactive admin access (default: just the Leader).
+- **`34-ConfigureConjurDNS.ps1`** *(feature `ConjurDNS`)* — creates per-node A-records plus `conjur-cluster` (leader/standby VIP) and `conjur-follower` (follower VIP) on DC01.
+- **`35-InstallConjurLeader.ps1`** *(feature `ConjurInstallLeader`)* — creates the Leader's Podman container (real seccomp profile, `AUDIT_WRITE` capability, `:z` mounts, `podman generate systemd` for reboot survival — all fixes for real Docker-vs-Podman gaps found by testing) and runs `evoke configure master`.
+- **`36-ImportConjurCertificates.ps1`** *(feature `ConjurImportCertificates`)* — issues leader/standby and follower certificates from the DC01 Enterprise CA and imports them via `evoke ca import`.
+- **`37-EncryptConjurLeaderKeys.ps1`** *(feature `ConjurEncryptKeys`)* — generates a native master key and runs the `evoke keys lock`/`encrypt`/`unlock` cycle. **Unlock does not persist across restarts** — must be re-run after every container/host restart.
+- **`38-InstallConjurStandby.ps1`** *(feature `ConjurInstallStandby`)* — seeds and configures a Standby, including a scripted workaround for a real `evoke unpack seed` bug (GNU tar's symlink-chmod call fails under Podman; content lands correctly regardless, only the exit code is wrong — worked around, not silently ignored).
+- **`39-InstallConjurFollower.ps1`** *(feature `ConjurInstallFollower`)* — same pattern as Standby, with Follower's real deltas: no `backups` mount, no 5432/1999 published ports, no `evoke ca issue` call, and uses the **shared** `conjur-follower.<domain>` seed identity (not the node's own hostname — Followers share one certificate as a group, unlike Standbys).
+- **`40-InstallVaultConjurSynchronizer.ps1`** *(feature `VaultConjurSynchronizer`)* — installs the Vault-Conjur Synchronizer on COMP01: idempotency + partial-install safety checks, an IE-first-launch registry fix (`Invoke-WebRequest` needs it on a fresh Windows Server 2022 build), platform-exists-or-import via PVWA REST, then a non-interactively-driven installer run via real stdin redirection. Needs marketplace-only media — see [prerequisites](#conjur-prereqs).
+- **`41-LoadConjurRootPolicy.ps1`** *(feature `ConjurLoadRootPolicy`)* — loads `Policies\{root-bootstrap,admins,root}.yml`: creates `admins`/`apps`/`ops` branch stubs, a self-owning `conjur-admins` group, and delegates `[read,create,update]` on root to it — without ever reassigning root's own `owner:` (stays the built-in `admin` user). Uses only `conjur policy load`/`update` (additive) — never `replace` (the one destructive verb) — against root.
+
 ### `Deploy-Optional.ps1` — Optional lab features (AD / LDAP / reconcile)
 Single menu/parameter-driven entry point for **opt-in** add-ons that are not part of the base lab. Supported tooling only (ActiveDirectory module on DC01 + PVWA REST) — nothing edited on the appliances, so it's redeploy/upgrade safe. Every feature is idempotent.
 - **VaultADObjects** — AD OU + the four Vault role groups (Admins/Users/Auditors/SafeManagers) populated with users (`vault_admin1..N`, etc.)
@@ -334,6 +381,18 @@ Single menu/parameter-driven entry point for **opt-in** add-ons that are not par
 - **DiscoveryAccount** — AD accounts-discovery scan account (`svc-discovery`) stored in PVWA
 - **PTACertificates** — issue + install CA-signed PTA certs from DC01 (DR-ready) — dispatches to `Scripts\Configure-PTACertificates.ps1`
 - **VaultPTASyslog** — configure Vault→PTA syslog forwarding — dispatches to `Scripts\Configure-VaultSyslogToPTA.ps1`
+- **ConjurNodes** — generalize `CONJUR-L01` and clone S01/S02/F01/F02/APP01 (see [Conjur Enterprise cluster](#conjur-cluster-deploy))
+- **LoadBalancer** — generic, reusable HAProxy pool configurator (not Conjur-specific) — used for the Conjur leader/follower pools on APP01, reusable later for PVWA/PSM pools
+- **ConjurSystemFolders** — create the `/opt/cyberark/conjur/{security,config,backup,seeds,logs}` folder set on every Conjur appliance node
+- **ConjurAppliance** — copy the Conjur appliance tarball + CLI RPM to the nodes (dispatches to `Scripts\33-CopyConjurAppliance.ps1`, real SCP not guest-ops — the tarball is too large for VIX)
+- **ConjurDNS** — create the Conjur A-records (per-node + cluster/follower VIPs) on DC01
+- **ConjurInstallLeader** — bring up the Leader container and run `evoke configure master`
+- **ConjurImportCertificates** — issue + import DC01 CA-signed leader/follower certs into the Leader
+- **ConjurEncryptKeys** — encrypt the Leader's server keys with a native master key
+- **ConjurInstallStandby** — create + configure a Standby — pass `-ConjurStandbyVMName`
+- **ConjurInstallFollower** — create + configure a Follower — pass `-ConjurFollowerVMName`
+- **VaultConjurSynchronizer** — install the Vault-Conjur Synchronizer on COMP01 (needs marketplace-only media — see [Conjur prerequisites](#conjur-prereqs))
+- **ConjurLoadRootPolicy** — bootstrap Conjur's root policy (`admins`/`apps`/`ops` branches, self-owning `conjur-admins` group delegated `[read,create,update]` on root) — see the `Policies\` folder
 
 ```powershell
 .\Deploy-Optional.ps1                                   # interactive menu
@@ -343,6 +402,7 @@ Single menu/parameter-driven entry point for **opt-in** add-ons that are not par
 .\Deploy-Optional.ps1 -Feature DiscoveryAccount
 .\Deploy-Optional.ps1 -Feature PTACertificates -PTAPrimaryName PTA01 -PTASecondaryName PTA02
 .\Deploy-Optional.ps1 -Feature VaultPTASyslog
+.\Deploy-Optional.ps1 -Feature ConjurLoadRootPolicy
 ```
 > The final config — Vault external directory + AD-group→authorization mapping, linking the reconcile account to a platform, and referencing the discovery account in an Accounts Discovery scan (plus scan rights on the targets) — is done in PrivateArk Client / PVWA (supported UI; no REST endpoint), so it is not scripted.
 
@@ -371,6 +431,53 @@ To pair a Primary + Secondary PTA with MongoDB replication, follow [Scripts/READ
 > **Run the DR wizards once.** `setupPrimary.sh` bootstraps from a clean *standalone* ptadb; a failed re-run leaves ptadb in an uninitialized replica-set state ("not primary"). Recovery without re-imaging: `sed -i '/^replication:/,/replSetName/d' /etc/opt/pta/ptadb/ptadb.conf && systemctl restart ptadb`.
 
 > **Reconnecting a re-imaged PTA to an existing Vault/PVWA:** if PVWA shows the fresh PTA disconnected (JWT `token not valid` / `Error getting Vault Server version`), run `/opt/pta/utility/vaultPermissionsValidation.sh` and answer `y` to recreate the stale `PTAApp` Vault user, restart PTA services, then log in to PVWA to re-sync.
+
+<a id="conjur-cluster-deploy"></a>
+### Conjur Enterprise cluster (optional add-on)
+
+**Read the [Conjur Enterprise prerequisites](#conjur-prereqs) above first** — a Red Hat subscription, a hand-built `CONJUR-L01` VM, and marketplace-only media are all required before script 30 will do anything useful.
+
+Once `CONJUR-L01` exists (RHEL 9, static IP `192.168.100.60`, `open-vm-tools` running — either via Script 29, untested, or hand-built, see above) and `Installers\Conjur\` has the appliance tarball + CLI RPM, the rest is scripted, in this order:
+
+```powershell
+# 0. Create CONJUR-L01 itself (skip if you hand-built it instead - see prerequisites)
+.\Scripts\29-CreateConjurL01VM.ps1 -OrgId <your-org-id> -ActivationKey <your-key>
+
+# 1. Clone L01 into S01/S02/F01/F02/APP01 (generalizes L01 first)
+.\Scripts\30-CloneConjurNodes.ps1
+
+# 2. Register every node with Red Hat (prompts once for credentials, reuses them)
+.\Scripts\Register-RHSM.ps1
+
+# 3. Networking: HAProxy on APP01 (leader + follower pools), system folders, DNS
+.\Deploy-Optional.ps1 -Feature LoadBalancer
+.\Deploy-Optional.ps1 -Feature ConjurSystemFolders
+.\Deploy-Optional.ps1 -Feature ConjurDNS
+
+# 4. Stage the appliance image on every node + the CLI on the Leader
+.\Scripts\33-CopyConjurAppliance.ps1 -VMNames CONJUR-L01,CONJUR-S01,CONJUR-S02,CONJUR-F01,CONJUR-F02 -Load
+
+# 5. Bring up the Leader, import CA-signed certs, set up native key encryption
+.\Deploy-Optional.ps1 -Feature ConjurInstallLeader
+.\Deploy-Optional.ps1 -Feature ConjurImportCertificates
+.\Deploy-Optional.ps1 -Feature ConjurEncryptKeys
+
+# 6. Standbys + Followers
+.\Deploy-Optional.ps1 -Feature ConjurInstallStandby -ConjurStandbyVMName CONJUR-S01
+.\Deploy-Optional.ps1 -Feature ConjurInstallStandby -ConjurStandbyVMName CONJUR-S02
+.\Deploy-Optional.ps1 -Feature ConjurInstallFollower -ConjurFollowerVMName CONJUR-F01
+.\Deploy-Optional.ps1 -Feature ConjurInstallFollower -ConjurFollowerVMName CONJUR-F02
+
+# 7. Root policy — admins/apps/ops branches, self-owning admin group delegated on root
+.\Deploy-Optional.ps1 -Feature ConjurLoadRootPolicy
+
+# 8. Optional: Vault-Conjur Synchronizer on COMP01 (needs its own marketplace media — see prerequisites)
+.\Deploy-Optional.ps1 -Feature VaultConjurSynchronizer -SynchronizerPlatformZipPath <path-to-platform.zip>
+```
+
+Verify: `https://conjur-cluster.cyberark.lab/health` (leader/standby pool, via HAProxy on APP01) and `https://conjur-cluster.cyberark.lab/ui` should both work from a domain-joined machine (e.g. DC01) with no certificate warning.
+
+> No dedicated load-balancer VM — HAProxy runs on `CONJUR-APP01` (`LoadBalancer` feature, a generic reusable HAProxy-pool configurator, not Conjur-specific). `ConjurLoadRootPolicy` only builds the `admins`/`apps`/`ops` branch structure and delegates administration to a `conjur-admins` group — it does not load any application-specific policy (that's expected to be client/project-specific and out of scope for a generic lab).
 
 ---
 
@@ -424,7 +531,6 @@ CyberArk-VMware-Lab\
 │   ├── VMwareHelper.psm1       # vmrun wrapper, VM lifecycle functions
 │   ├── GuestHelper.psm1        # Guest file copy, WinRM helpers
 │   ├── RemotingHelper.psm1     # PowerShell remoting helpers
-│   ├── CyberArkHelper.psm1     # CyberArk service/credential helpers
 │   ├── NetworkHelper.psm1      # Network connectivity helpers
 │   ├── setup.iss               # Recorded silent install — Vault server
 │   └── Setup-client.iss        # Recorded silent install — PrivateArk Client
@@ -445,12 +551,30 @@ CyberArk-VMware-Lab\
 │   ├── README-PTA-DR.md          # PTA Disaster Recovery guide
 │   ├── 12-CreatePSMPVM.ps1
 │   ├── 13-InstallPSMP.ps1
+│   ├── 29-CreateConjurL01VM.ps1       ┐
+│   ├── 30-CloneConjurNodes.ps1        │
+│   ├── Register-RHSM.ps1              │
+│   ├── 31-ConfigureLoadBalancer.ps1   │
+│   ├── 32-CreateConjurSystemFolders.ps1
+│   ├── 33-CopyConjurAppliance.ps1     │  Conjur Enterprise cluster
+│   ├── 34-ConfigureConjurDNS.ps1      │  (optional add-on — see
+│   ├── 35-InstallConjurLeader.ps1     │  Prerequisites + its own
+│   ├── 36-ImportConjurCertificates.ps1│  README section)
+│   ├── 37-EncryptConjurLeaderKeys.ps1 │
+│   ├── 38-InstallConjurStandby.ps1    │
+│   ├── 39-InstallConjurFollower.ps1   │
+│   ├── 40-InstallVaultConjurSynchronizer.ps1
+│   ├── 41-LoadConjurRootPolicy.ps1    ┘
 │   └── Teardown.ps1
+├── Policies\                    # Conjur root policy YAML (loaded by Script 41)
+│   ├── root-bootstrap.yml
+│   ├── admins.yml
+│   └── root.yml
 ├── Templates\
 │   └── unattend-base.xml       # Windows unattended install template
 ├── Installers\                 # CyberArk media — not included, see Prerequisites
 ├── Deploy-Lab.ps1              # Master orchestrator (base lab)
-└── Deploy-Optional.ps1         # Optional opt-in features (AD/LDAP/reconcile)
+└── Deploy-Optional.ps1         # Optional opt-in features (AD/LDAP/reconcile/Conjur)
 ```
 
 ---
@@ -463,3 +587,6 @@ CyberArk-VMware-Lab\
 - **CyberArk version:** Tested with CyberArk v14/v15 component packages
 - **VMnet8 subnet:** Must be configured as `192.168.100.0/24` in VMware Virtual Network Editor before deployment. Without this, the host cannot reach guest VMs over TCP.
 - **PTA DR:** Full Disaster Recovery walkthrough and troubleshooting in [Scripts/README-PTA-DR.md](Scripts/README-PTA-DR.md).
+- **Conjur is genuinely more manual to start than the rest of this lab.** `CONJUR-L01`'s own creation (`29-CreateConjurL01VM.ps1`) is unattended but untested and needs a Red Hat activation key; the appliance/CLI/Synchronizer media are marketplace-only and cannot be redistributed regardless — read the [Conjur prerequisites](#conjur-prereqs) fully before starting. Once L01 exists and media is staged, everything from cloning through root-policy load is scripted, idempotent, and has been run and verified end-to-end.
+- **Conjur automation testing status:** the container/`evoke configure`/certificate-import/key-encryption/HAProxy/DNS/replication path (Leader + 2 Standbys + 2 Followers) and the root-policy load (Script 41) have been run and verified end-to-end against a live cluster. `Scripts\40-InstallVaultConjurSynchronizer.ps1`'s non-interactive installer automation (Phase 5, stdin-redirected) has **not** been exercised end-to-end as automation — every real run so far already had the Synchronizer installed, so only its idempotency path is confirmed. If you hit an issue running it fresh, that's the most likely place — feedback/PRs welcome.
+- **Podman version note:** CyberArk's own Conjur training material certifies Podman 3.3/3.4; this lab has been run successfully against Podman 5.8.2 (RHEL 9.8), but always check `docs.cyberark.com` for your installed appliance version's actual supported-platform matrix rather than relying on this note.

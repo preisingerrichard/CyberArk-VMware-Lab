@@ -354,8 +354,8 @@ set -e
 podman exec $ContainerName evoke keys exec -m /opt/cyberark/conjur/security/master.key -- evoke configure standby > /tmp/conjur_configure_out.txt 2>&1
 touch $marker7
 "@
-$cfgResult = Invoke-LinuxGuestScript -VMXPath $standbyVmx -ScriptText $configureScript `
-    -GuestUser $GuestUser -GuestPassword $GuestPass -NoThrow -TimeoutSeconds 180
+Invoke-LinuxGuestScript -VMXPath $standbyVmx -ScriptText $configureScript `
+    -GuestUser $GuestUser -GuestPassword $GuestPass -NoThrow -TimeoutSeconds 180 | Out-Null
 $chk7 = Invoke-VMRun -Arguments @("-gu",$GuestUser,"-gp",$GuestPass,
     "runProgramInGuest",$standbyVmx,"/bin/bash","-c","test -f $marker7") -NoThrow
 $configureLog = (Get-GuestFileText -Vmx $standbyVmx -RemotePath "/tmp/conjur_configure_out.txt")
