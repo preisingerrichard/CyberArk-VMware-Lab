@@ -67,7 +67,7 @@ param(
     [string]$GuestUser    = "root",
     [string]$GuestPass    = "Cyberark1",        # template root password
     [string]$Domain       = "cyberark.lab",
-    [string]$Nic          = "ens160",
+    [string]$Nic          = "ens160",           # last-resort fallback only - the personalize step auto-detects the active connection first (see its comment; e1000 vs vmxnet3 produce different real device names)
     [switch]$LeaveTemplateOff                   # skip Phase D (don't boot L01 at the end)
 )
 
@@ -276,7 +276,16 @@ esac
 #!/bin/bash
 set -e
 hostnamectl set-hostname $fqdn
-CON=`$(nmcli -g GENERAL.CONNECTION device show $Nic 2>/dev/null | head -1)
+# Auto-detect the active connection rather than assuming a device name -
+# the correct name depends on which NIC emulation built the template
+# (e1000 -> typically ensNN/eth0, vmxnet3 -> typically ens160), which
+# differs between Scripts\29-CreateConjurL01VM.ps1 (e1000) and a
+# hand-built L01 (often vmxnet3). At this point in the clone/personalize
+# flow exactly one connection is up (whatever L01's own static-IP profile
+# was), so grabbing the currently active one is reliable either way.
+# -Nic is kept only as a last-resort fallback if nothing is active yet.
+CON=`$(nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | head -1 | cut -d: -f1)
+[ -n "`$CON" ] || CON=`$(nmcli -g GENERAL.CONNECTION device show $Nic 2>/dev/null | head -1)
 [ -n "`$CON" ] || CON=$Nic
 nmcli con mod "`$CON" ipv4.method manual ipv4.addresses $ip/24 ipv4.gateway $gateway ipv4.dns $dns
 nmcli con up "`$CON" || true

@@ -62,7 +62,7 @@ param(
     [array] $Pools,                               # default = the two Conjur pools below
     [string]$GuestUser  = "root",
     [string]$GuestPass  = "Cyberark1",
-    [string]$Nic        = "ens160",
+    [string]$Nic        = "ens160",             # last-resort fallback only - the VIP step auto-detects the active connection first (see its comment; e1000 vs vmxnet3 produce different real device names)
     [string]$FollowerVIP = "192.168.100.71"       # secondary IP alias on APP01 for the
                                                     # follower pool, so it can use plain
                                                     # 443/444 (CyberArk's real ports)
@@ -185,8 +185,16 @@ foreach ($vip in $bindIPs) {
     $vipScript = @"
 #!/bin/bash
 set -e
-if ! ip -4 addr show $Nic | grep -q "$vip/"; then
-  CON=`$(nmcli -g GENERAL.CONNECTION device show $Nic 2>/dev/null | head -1)
+# Auto-detect the active connection rather than assuming a device name -
+# the correct name depends on which NIC emulation built the node (e1000
+# vs vmxnet3 - see Scripts\30-CloneConjurNodes.ps1's personalize step for
+# the full explanation). -Nic is kept only as a last-resort fallback.
+CON=`$(nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | head -1 | cut -d: -f1)
+[ -n "`$CON" ] || CON=`$(nmcli -g GENERAL.CONNECTION device show $Nic 2>/dev/null | head -1)
+[ -n "`$CON" ] || CON=$Nic
+DEV=`$(nmcli -g GENERAL.DEVICES con show "`$CON" 2>/dev/null | head -1)
+[ -n "`$DEV" ] || DEV=$Nic
+if ! ip -4 addr show "`$DEV" 2>/dev/null | grep -q "$vip/"; then
   nmcli con mod "`$CON" +ipv4.addresses $vip/24
   nmcli con up "`$CON" || true
 fi
