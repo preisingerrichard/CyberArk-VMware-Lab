@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-07-30
+
+### Added
+- **`Deploy-Lab.ps1`: Retry option on step failure.** Previously only Continue-or-abort (Y/N) when a step failed. Now Retry/Continue/Abort (R/C/A) - Retry re-runs just the failed step in place, letting an admin fix the underlying issue (credentials, network, a missing file) and try again without restarting the whole deployment or manually re-invoking the script outside the orchestrator. Safe because every script in this repo already checks existing state and skips completed sub-steps - re-running after a partial failure was already how these scripts were designed to be used.
+
 ## [1.5.0] - 2026-07-30
 
 ### Added
@@ -78,6 +83,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - Master orchestrator `Deploy-Lab.ps1` with per-step execution.
 - Teardown script and helper modules.
 
+[1.6.0]: #160---2026-07-30
 [1.5.0]: #150---2026-07-30
 [1.4.0]: #140---2026-07-04
 [1.3.0]: #130---2026-07-04
