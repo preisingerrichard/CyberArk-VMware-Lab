@@ -128,21 +128,46 @@ function Invoke-LabStep {
     }
     catch {
         $duration = (Get-Date) - $stepStart
-
-        $script:stepResults += @{
-            Step = $StepName
-            Status = "FAILED"
-            Duration = $duration.ToString("hh\:mm\:ss")
-            Error = $_.Exception.Message
-        }
+        $errMsg = $_.Exception.Message
 
         Write-Host ""
         Write-Host "[FAILED] $StepName FAILED after $($duration.ToString('hh\:mm\:ss'))" -ForegroundColor Red
-        Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  Error: $errMsg" -ForegroundColor Red
 
-        $continue = Read-Host "Continue with next step? (Y/N)"
-        if ($continue -ne 'Y') {
-            throw "Deployment aborted at step: $StepName"
+        while ($true) {
+            $choice = Read-Host "Retry step, Continue to next step, or Abort? (R/C/A)"
+            switch ($choice.ToUpper()) {
+                'R' {
+                    # Fix the underlying issue, then retry the SAME step. Safe because
+                    # every script in this repo checks existing state and skips
+                    # completed sub-steps - re-running after a partial failure is
+                    # already how these scripts are designed to be used, this just
+                    # exposes that from the orchestrator instead of requiring a
+                    # separate manual re-run.
+                    Write-Host "`nRetrying step: $StepName..." -ForegroundColor Yellow
+                    Invoke-LabStep -StepName $StepName -ScriptPath $ScriptPath -Description $Description
+                    return
+                }
+                'C' {
+                    $script:stepResults += @{
+                        Step = $StepName
+                        Status = "FAILED"
+                        Duration = $duration.ToString("hh\:mm\:ss")
+                        Error = $errMsg
+                    }
+                    return
+                }
+                'A' {
+                    $script:stepResults += @{
+                        Step = $StepName
+                        Status = "FAILED"
+                        Duration = $duration.ToString("hh\:mm\:ss")
+                        Error = $errMsg
+                    }
+                    throw "Deployment aborted at step: $StepName"
+                }
+                default { Write-Host "Please enter R, C, or A." -ForegroundColor Yellow }
+            }
         }
     }
 }
