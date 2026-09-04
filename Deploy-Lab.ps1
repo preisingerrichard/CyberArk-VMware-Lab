@@ -22,7 +22,14 @@ param(
     [string[]]$Steps = @("All"),
 
     [switch]$Help,
-    [string]$ConfigPath = "$PSScriptRoot\Config\LabConfig.psd1"
+    [string]$ConfigPath = "$PSScriptRoot\Config\LabConfig.psd1",
+
+    # Scopes the DeployVMs step to just these VM names (as listed in
+    # LabConfig.psd1's $Config.VMs, e.g. VAULT01, COMP01) instead of cloning/
+    # configuring every VM. Existing VMs are left untouched either way (clone
+    # is skip-if-exists) - this exists specifically so recreating one VM
+    # (e.g. after corruption) doesn't reboot/sysprep the others.
+    [string[]]$VMNames
 )
 
 if ($Help) {
@@ -64,6 +71,7 @@ if ($Help) {
     Write-Host "  .\Deploy-Lab.ps1 -Steps PTAInstall                  # Re-run PTA install only"
     Write-Host "  .\Deploy-Lab.ps1 -Steps CreatePSMPVM,PSMPInstall    # Add PSMP to existing lab"
     Write-Host "  .\Deploy-Lab.ps1 -Steps PSMPInstall                 # Re-run PSMP install only"
+    Write-Host "  .\Deploy-Lab.ps1 -Steps DeployVMs -VMNames VAULT01  # Recreate just one VM"
     Write-Host ""
     return
 }
@@ -104,7 +112,8 @@ function Invoke-LabStep {
     param(
         [string]$StepName,
         [string]$ScriptPath,
-        [string]$Description
+        [string]$Description,
+        [hashtable]$ExtraArgs = @{}
     )
 
     $stepStart = Get-Date
@@ -114,7 +123,7 @@ function Invoke-LabStep {
     Write-Host $("=" * 70) -ForegroundColor Magenta
 
     try {
-        & $ScriptPath -ConfigPath $ConfigPath
+        & $ScriptPath -ConfigPath $ConfigPath @ExtraArgs
         $duration = (Get-Date) - $stepStart
 
         $script:stepResults += @{
@@ -145,7 +154,7 @@ function Invoke-LabStep {
                     # exposes that from the orchestrator instead of requiring a
                     # separate manual re-run.
                     Write-Host "`nRetrying step: $StepName..." -ForegroundColor Yellow
-                    Invoke-LabStep -StepName $StepName -ScriptPath $ScriptPath -Description $Description
+                    Invoke-LabStep -StepName $StepName -ScriptPath $ScriptPath -Description $Description -ExtraArgs $ExtraArgs
                     return
                 }
                 'C' {
@@ -186,9 +195,12 @@ if ($allSteps -or $Steps -contains "BaseVM") {
 }
 
 if ($allSteps -or $Steps -contains "DeployVMs") {
+    $deployVMsArgs = @{}
+    if ($VMNames) { $deployVMsArgs['VMNames'] = $VMNames }
     Invoke-LabStep -StepName "DeployVMs" `
         -ScriptPath "$scriptsDir\02-DeployVMs.ps1" `
-        -Description "Deploying all lab VMs from template"
+        -Description $(if ($VMNames) { "Deploying: $($VMNames -join ', ')" } else { "Deploying all lab VMs from template" }) `
+        -ExtraArgs $deployVMsArgs
 }
 
 if ($allSteps -or $Steps -contains "DomainController") {

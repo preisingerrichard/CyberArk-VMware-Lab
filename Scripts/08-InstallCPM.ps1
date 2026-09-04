@@ -210,8 +210,20 @@ if (Test-Path `$regConfig) {
         -Label "registration" -ScriptBlock @"
 $findAutoDir
 Set-Location "`$autoDir\Registration"
+`$regLog = "`$autoDir\Registration\Script.log"
+`$beforeLines = if (Test-Path `$regLog) { (Get-Content `$regLog).Count } else { 0 }
 Write-Host 'Running CPMRegisterCommponent.ps1...'
 & .\CPMRegisterCommponent.ps1 -pwd '$($CAConfig.Vault.AdminPassword)'
+# CPMRegisterCommponent.ps1 logs ERROR: lines to Script.log on failure but
+# still exits 0 - check the log itself rather than trust the exit code.
+if (Test-Path `$regLog) {
+    `$errLines = Get-Content `$regLog | Select-Object -Skip `$beforeLines | Where-Object { `$_ -match 'ERROR:' }
+    if (`$errLines) {
+        Write-Host 'Registration log errors:'
+        `$errLines | ForEach-Object { Write-Host `$_ }
+        throw "CPMRegisterCommponent reported errors in Script.log - see above"
+    }
+}
 Write-Host '[OK] Registration complete'
 "@
     Write-Host "  [3/4] Registration complete" -ForegroundColor Green
@@ -287,8 +299,20 @@ Write-Host '[OK] Installation complete'
         -Label "registration" -ScriptBlock @"
 $findAutoDir
 Set-Location "`$autoDir\Registration"
+`$regLog = "`$autoDir\Registration\Script.log"
+`$beforeLines = if (Test-Path `$regLog) { (Get-Content `$regLog).Count } else { 0 }
 Write-Host 'Running CPMRegisterCommponent.ps1...'
 & .\CPMRegisterCommponent.ps1 -pwd '$($CAConfig.Vault.AdminPassword)'
+# CPMRegisterCommponent.ps1 logs ERROR: lines to Script.log on failure but
+# still exits 0 - check the log itself rather than trust the exit code.
+if (Test-Path `$regLog) {
+    `$errLines = Get-Content `$regLog | Select-Object -Skip `$beforeLines | Where-Object { `$_ -match 'ERROR:' }
+    if (`$errLines) {
+        Write-Host 'Registration log errors:'
+        `$errLines | ForEach-Object { Write-Host `$_ }
+        throw "CPMRegisterCommponent reported errors in Script.log - see above"
+    }
+}
 Write-Host '[OK] Registration complete'
 "@
     Write-Host "  [3/4] Registration complete" -ForegroundColor Green

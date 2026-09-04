@@ -4,7 +4,14 @@
 #>
 
 param(
-    [string]$ConfigPath = "$PSScriptRoot\..\Config\LabConfig.psd1"
+    [string]$ConfigPath = "$PSScriptRoot\..\Config\LabConfig.psd1",
+
+    # Scope to just these VM names (matching $Config.VMs.Name) instead of
+    # every Windows VM. Existing VMs still exist -> clone is skipped for them
+    # (New-LabVMFromTemplate is skip-if-exists), but WITHOUT this param the
+    # loop below still reboots and re-sysprep's them regardless - scoping
+    # avoids touching VMs you didn't ask to redeploy.
+    [string[]]$VMNames
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +22,14 @@ Import-Module "$PSScriptRoot\..\Helpers\GuestHelper.psm1" -Force
 $Config = Import-PowerShellDataFile $ConfigPath
 Initialize-VMwareHelper -Config $Config.VMware
 $windowsVMs = $Config.VMs | Where-Object { $_.OS -ne 'RockyLinux9' }
+
+if ($VMNames) {
+    $windowsVMs = $windowsVMs | Where-Object { $VMNames -contains $_.Name }
+    $missing = $VMNames | Where-Object { $_ -notin $windowsVMs.Name }
+    if ($missing) {
+        throw "VMNames not found in config (or not a Windows VM): $($missing -join ', ')"
+    }
+}
 
 $templateVMX = Join-Path $Config.VMware.DefaultVMFolder "$($Config.VMware.TemplateName)\$($Config.VMware.TemplateName).vmx"
 
@@ -284,5 +299,10 @@ $deployedVMs.GetEnumerator() | ForEach-Object {
 }
 Write-Host $("=" * 60) -ForegroundColor Green
 
-# Save VM paths for subsequent scripts
-$deployedVMs | Export-Clixml "$PSScriptRoot\..\Config\DeployedVMs.xml"
+# Save VM paths for subsequent scripts. Merge into any existing file rather
+# than overwrite - a scoped -VMNames run must not erase other VMs' entries
+# that other scripts (06/07/08/09/40...) still need to read.
+$deployedVMsPath = "$PSScriptRoot\..\Config\DeployedVMs.xml"
+$mergedVMs = if (Test-Path $deployedVMsPath) { Import-Clixml $deployedVMsPath } else { @{} }
+foreach ($key in $deployedVMs.Keys) { $mergedVMs[$key] = $deployedVMs[$key] }
+$mergedVMs | Export-Clixml $deployedVMsPath
