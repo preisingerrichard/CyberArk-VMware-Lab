@@ -1,6 +1,6 @@
 # CyberArk Self-Hosted Lab — VMware Workstation
 
-Automated deployment of a full CyberArk self-hosted environment on VMware Workstation Pro using PowerShell. Builds Windows Server 2022 and Rocky Linux 9 VMs from scratch, promotes a domain controller, and installs Vault, PVWA, CPM, PSM, PTA, and PSMP — all unattended.
+Automated deployment of a full CyberArk self-hosted environment on VMware Workstation Pro using PowerShell. Builds Windows Server 2022, Rocky Linux 9, and RHEL 9 VMs from scratch, promotes a domain controller, and installs Vault, PVWA, CPM, PSM, PTA, and PSMP — all unattended. Optionally also deploys a full Conjur Enterprise HA cluster (Leader, 2 Standbys, 2 Followers, load-balanced by HAProxy) — see [Conjur Enterprise cluster](#conjur-cluster-deploy) below.
 
 ---
 

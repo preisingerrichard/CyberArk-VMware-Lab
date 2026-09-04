@@ -68,8 +68,8 @@
         this the leader answered on localhost but was unreachable from the
         HAProxy pool on APP01 - confirmed live before this was added.
 
-    NOTE: the systemd-unit step below follows Podman's standard *rootful*
-    generate-systemd pattern (`podman generate systemd --new --name ... >
+    NOTE: the systemd-unit step below uses Podman's rootful generate-systemd
+    pattern WITHOUT `--new` (`podman generate systemd --name ... >
     /etc/systemd/system/<name>.service`). CyberArk's official doc's Step 11
     is written for both root/rootless, but the rootful-tab body wasn't
     available when this was written (only the rootless
@@ -77,6 +77,24 @@
     containers as true root (not a rootless Podman user), the standard
     Podman rootful equivalent is used instead. Verify against the actual
     CyberArk doc's Rootful tab before relying on this for a real engagement.
+
+    **Real incident, found and fixed 2026-07-31**: this script originally used
+    `--new`, which embeds a full `podman run` into the generated unit -
+    systemd then RECREATES the container from scratch on every start,
+    including after a host reboot. Since Postgres data lives in the
+    container's own writable layer (deliberately not bind-mounted - only
+    security/config/backups/seeds/logs are), a host reboot silently wiped
+    the entire Conjur database on every node using this pattern, while
+    /opt/conjur/etc/role, nginx's generated config, and the running Postgres
+    process all vanished with it - discovered when a live cluster (L01+S01+
+    S02, all recreated within the same minute after an apparent host reboot)
+    came back with no configured account at all. `--new` is the right choice
+    for stateless/ephemeral containers; it is wrong for a container whose
+    state lives in its own filesystem layer. Without `--new`, the generated
+    unit does `podman start`/`stop` on the SAME container object instead -
+    podman's container storage persists across host reboots independent of
+    the running daemon, so this actually survives a reboot rather than just
+    coming back up empty.
 
     Idempotent: re-running with the container already present just reports
     it and exits - does not recreate or restart it. NOTE: this only checks
@@ -218,7 +236,7 @@ set +x
 # guidance: do not use --restart with Podman at all, generate a real systemd
 # unit instead. Rootful equivalent of the doc's Step 11 (doc's shown example
 # was the rootless $HOME/.config/systemd/user variant).
-podman generate systemd --new --name `$containerName > /etc/systemd/system/`$containerName.service
+podman generate systemd --name `$containerName > /etc/systemd/system/`$containerName.service
 systemctl daemon-reload
 systemctl enable `$containerName.service
 

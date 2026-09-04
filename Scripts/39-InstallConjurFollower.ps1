@@ -46,7 +46,12 @@
       2. Ensure the appliance image is loaded (same as Standby)
       3. System folders + firewalld - only 443/444
       4. Real seccomp profile + `podman run` (no backups mount, no
-         5432/1999) + a real systemd unit via `podman generate systemd --new`
+         5432/1999) + a real systemd unit via `podman generate systemd` (NOT
+         `--new` - see Scripts\35's header: `--new` recreates the container
+         fresh on every start including after a host reboot, silently wiping
+         Postgres data that lives in the container's own filesystem layer -
+         a real incident found 2026-07-31 when a host reboot wiped an entire
+         live cluster this way)
       5. Seed transfer: `evoke seed follower <shared-follower-fqdn>
          <cluster-fqdn>` on the Leader, piped via SSH into `evoke unpack
          seed -` on the Follower - same host-mediated pipe pattern as
@@ -268,7 +273,7 @@ podman run \
   --volume /opt/cyberark/`$containerName/logs:/var/log/conjur:z \
   `$imageRef
 
-podman generate systemd --new --name `$containerName > /etc/systemd/system/`$containerName.service
+podman generate systemd --name `$containerName > /etc/systemd/system/`$containerName.service
 systemctl daemon-reload
 systemctl enable `$containerName.service
 

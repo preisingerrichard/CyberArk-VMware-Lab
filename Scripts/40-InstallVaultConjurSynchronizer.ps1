@@ -187,14 +187,41 @@ try {
 
     if ($safeExists -and -not $Force) {
         throw "Safe '$SafeName' already exists but the Synchronizer service isn't running - " +
-              "this looks like a partial prior install attempt. The installer will prompt " +
-              "'$SafeName already exists. Continue?' which this script's fixed answer sequence " +
-              "does NOT account for (it would misalign every prompt after it, same class of " +
-              "risk that caused a real password mix-up during this lab's own manual run). " +
-              "Either clean up the partial Safe/accounts manually and re-run, or pass -Force " +
-              "to attempt anyway (only safe if you've verified the answer sequence still lines up)."
+              "this looks like a partial prior install attempt. Pass -Force to retry: confirmed " +
+              "live (real transcript, not guessed) that the installer's only extra prompt in " +
+              "this case is 'Safe already exists. Continue? (default: yes)' right after the Safe " +
+              "name - Phase 5 below now answers it automatically when -Force is used, so this is " +
+              "safe to retry rather than clean up manually."
     }
     Write-Host "  [OK] Clean state - Safe '$SafeName' does not exist yet, safe to proceed" -ForegroundColor Green
+
+    # Real gotcha confirmed live: a LOB Vault User (e.g. "secrets") is a
+    # Vault-wide object, NOT scoped to the Safe - renaming/retrying with a
+    # different Safe name does nothing to it. If it survives from a prior
+    # partial install, the installer's LOB-name prompt rejects it with
+    # "WARNING: LOB user <name> already exists" and just re-prompts forever
+    # (not a hard error, easy to mistake for a hang) until a non-colliding
+    # name is entered. Same treatment as the Safe check above.
+    $lobUserExists = $false
+    $lobUserId = $null
+    try {
+        $lobUsers = (Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Users?search=$LobName" -Headers $pvwaHdr).Content | ConvertFrom-Json
+        $match = $lobUsers.Users | Where-Object { $_.username -eq $LobName }
+        if ($match) { $lobUserExists = $true; $lobUserId = $match.id }
+    } catch { $lobUserExists = $false }
+
+    if ($lobUserExists -and -not $Force) {
+        throw "A Vault User named '$LobName' already exists (id $lobUserId) - leftover from a " +
+              "prior partial install, Vault-wide, unrelated to the Safe name. The installer will " +
+              "loop re-prompting for a LOB name rather than failing outright if this isn't " +
+              "cleared first. Pass -Force to have this script delete it automatically before " +
+              "retrying, or delete it manually via PVWA (Users > search '$LobName') first."
+    }
+    if ($lobUserExists -and $Force) {
+        Write-Host "  Deleting stale LOB Vault User '$LobName' (id $lobUserId) before retry..." -ForegroundColor Yellow
+        Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Users/$lobUserId" -Method DELETE -Headers $pvwaHdr | Out-Null
+        Write-Host "  [OK] Stale LOB user removed" -ForegroundColor Green
+    }
 
     # ================================================================
     # Phase 2: IE first-launch registry fix (idempotent)
@@ -211,7 +238,14 @@ Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Internet Explorer\Main' -Name '
     # ================================================================
     Write-Host "`n[Phase 3] Checking Vault platform '$PlatformName'..." -ForegroundColor Yellow
     $platforms = (Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Platforms" -Headers $pvwaHdr).Content | ConvertFrom-Json
-    $platformExists = $platforms.Platforms | Where-Object { $_.Name -eq $PlatformName -or $_.PlatformID -eq $PlatformName }
+    # This PVWA version's /api/Platforms nests id/name under .general (confirmed
+    # live: { general: { id, name }, properties, ... }), not flat .Name/.PlatformID -
+    # matching both shapes here since which one a given PVWA version returns isn't
+    # guaranteed to stay consistent across upgrades.
+    $platformExists = $platforms.Platforms | Where-Object {
+        $_.Name -eq $PlatformName -or $_.PlatformID -eq $PlatformName -or
+        $_.general.name -eq $PlatformName -or $_.general.id -eq $PlatformName
+    }
     if ($platformExists) {
         Write-Host "  [OK] Platform '$PlatformName' already present" -ForegroundColor Green
     } else {
@@ -250,10 +284,12 @@ Write-Host "  [OK]" -ForegroundColor Green
 # ================================================================
 # Phase 5: run the installer non-interactively via real stdin redirection
 # ================================================================
-Write-Host "`n[Phase 5] Running Synchronizer installer (non-interactive, UNTESTED automation path - watch closely)..." -ForegroundColor Yellow
+Write-Host "`n[Phase 5] Running Synchronizer installer (non-interactive - answer sequence confirmed against a real transcript 2026-08-07, but the underlying Process-based stdin injection itself has hung twice with zero output even with a correct sequence, cause not yet root-caused - watch closely, manual run remains the reliable fallback)..." -ForegroundColor Yellow
 
-# Exact validated prompt order from two live manual runs on this lab.
-# Blank entries accept the installer's own displayed default.
+# Exact prompt order confirmed against a REAL installer transcript
+# (2026-08-07, this lab, both a clean-ish run and a retry-over-existing-Safe
+# run) - not guessed. Blank entries accept the installer's own displayed
+# default.
 $answers = @(
     "ent",                  # Conjur Cloud or Enterprise
     "no",                   # HA Synchronizer cluster
@@ -265,13 +301,24 @@ $answers = @(
     "",                     # Vault port (default 1858)
     $VaultAdminUser,         # Vault admin username
     $VaultAdminPassword,     # Vault admin password
-    $SafeName,               # Safe name
+    $SafeName               # Safe name
+)
+if ($safeExists) {
+    # Only appears when retrying over an already-existing Safe (confirmed
+    # live) - "<Safe> already exists. Continue? (default: yes)". Inserting
+    # this unconditionally on a clean run would consume the NEXT real
+    # prompt's answer instead, misaligning everything after it - hence
+    # conditional on the same $safeExists Phase 1 already computed.
+    $answers += "yes"
+}
+$answers += @(
     $ConjurUrl,               # Conjur server hostname/port
     $ConjurAccount,           # Conjur account name
     $ConjurAdminUser,         # Conjur username
     $ConjurAdminPassword,     # Conjur API key/password
     "yes",                   # create LOBs now
-    $LobName,                 # LOB name
+    $LobName,                 # LOB name (single dedicated prompt, confirmed
+                               # NOT combined with the yes/no above)
     $PlatformName              # CyberArk Vault platform name for the LOB account
 )
 
@@ -281,10 +328,14 @@ $remoteErrFile     = "C:\LabSetup\synchronizer_install_err.log"
 
 # Write the answers file on the guest (avoids re-encoding secrets through
 # guest-ops script text more than once)
+# Real bug found live: a trailing comma after the LAST array element
+# (`'a', 'b', 'c',`) is a PowerShell syntax error inside @(...) - not
+# tolerated like a trailing comma in JS/Python. Join with ",`n" between
+# elements instead of appending a comma after every element.
 $answersScript = "New-Item -Path 'C:\LabSetup' -ItemType Directory -Force | Out-Null`n"
 $answersScript += "@(`n"
-foreach ($a in $answers) { $answersScript += "  '$($a -replace "'", "''")',`n" }
-$answersScript += ") | Set-Content -Path '$remoteAnswersFile' -Encoding ASCII"
+$answersScript += ($answers | ForEach-Object { "  '$($_ -replace "'", "''")'" }) -join ",`n"
+$answersScript += "`n) | Set-Content -Path '$remoteAnswersFile' -Encoding ASCII"
 Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass -ScriptBlock $answersScript | Out-Null
 
 $runScript = @"
@@ -306,7 +357,7 @@ foreach (`$line in `$answerLines) { `$proc.StandardInput.WriteLine(`$line) }
 `$stderr | Set-Content -Path '$remoteErrFile'
 exit `$proc.ExitCode
 "@
-$installResult = Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass -NoThrow -TimeoutSeconds 660 -ScriptBlock $runScript
+$installResult = Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass -NoThrow -ScriptBlock $runScript
 
 # ================================================================
 # Phase 6: verify success from captured output, not exit code alone
