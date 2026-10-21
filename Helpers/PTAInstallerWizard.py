@@ -4,7 +4,10 @@ Drive PTA installer.war wizard API via curl subprocess.
 Uses curl instead of Python urllib to avoid Rocky Linux 9 crypto-policy
 TLS handshake conflicts with Tomcat's SSL configuration.
 
-Usage: python3 pta_configure_installer.py <vault_ip> <vault_pass> <pvwa_host> <root_pass> [admin_user] [timezone]
+Copied to the PTA host and run there by Scripts\11-InstallPTA-Primary.ps1 (step 6d).
+NOTE: no usage guard - without arguments it runs the wizard with built-in defaults.
+
+Usage: python3 PTAInstallerWizard.py <vault_ip> <vault_pass> <pvwa_host> <root_pass> [admin_user] [timezone]
 """
 import json
 import subprocess

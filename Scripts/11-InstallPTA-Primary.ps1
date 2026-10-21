@@ -545,7 +545,7 @@ if ($vaultValPath) {
 }
 
 # Step 6d: Run the installer.war wizard via the REST API.
-# pta_configure_installer.py drives all 13 wizard steps in one pass:
+# Helpers\PTAInstallerWizard.py drives all 13 wizard steps in one pass:
 # vault connectivity, PVWA registration, firewalld, syslog.
 Write-Host "  [6d] Running installer.war wizard (vault + PVWA configuration)..." -ForegroundColor DarkGray
 
@@ -553,9 +553,9 @@ $timezone = $CAConfig.PTA.Timezone
 $pvwaHost = if ($pvwaVM) { "$($pvwaVM.Name.ToLower()).$($Config.Domain.Name)" } else { $CAConfig.Vault.VaultAddress }
 $rootPass = $Config.LocalAdmin.Password
 
-$pyScriptSrc = Join-Path $PSScriptRoot "pta_configure_installer.py"
+$pyScriptSrc = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\Helpers\PTAInstallerWizard.py"))
 if (-not (Test-Path $pyScriptSrc)) {
-    throw "pta_configure_installer.py not found at $pyScriptSrc - required for installer wizard"
+    throw "PTAInstallerWizard.py not found at $pyScriptSrc - required for installer wizard"
 }
 Copy-ToGuest -LocalPath $pyScriptSrc -RemoteDir "/tmp"
 
@@ -564,7 +564,7 @@ Copy-ToGuest -LocalPath $pyScriptSrc -RemoteDir "/tmp"
 # here (single backtick to suppress) but the resulting .sh is plain bash.
 $wizScript = @"
 #!/bin/bash
-python3 /tmp/pta_configure_installer.py \
+python3 /tmp/PTAInstallerWizard.py \
   '$vaultIP' \
   '$vaultPass' \
   '$pvwaHost' \
@@ -589,7 +589,7 @@ try {
     } else {
         Write-Warning "Installer wizard exited $($wizResult.ExitStatus)"
         Write-Warning "To re-run manually, SSH to PTA01 and run:"
-        Write-Warning "  python3 /tmp/pta_configure_installer.py $vaultIP '$vaultPass' $pvwaHost"
+        Write-Warning "  python3 /tmp/PTAInstallerWizard.py $vaultIP '$vaultPass' $pvwaHost"
     }
 } finally {
     Remove-Item $tmpWizScript -ErrorAction SilentlyContinue
