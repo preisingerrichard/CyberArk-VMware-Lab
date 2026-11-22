@@ -223,11 +223,12 @@ CyberArk-specific settings — Vault address, admin credentials, component insta
 .\Deploy-Lab.ps1
 ```
 
-### Full lab including PTA and PSMP
+### Full lab including LDAP integration, PTA and PSMP
 
 ```powershell
 .\Deploy-Lab.ps1 -Steps Full
 ```
+`Full` also runs the Vault LDAP integration (`VaultADObjects`, `VaultLDAP`) after PSM, and the PTA certificates + Vault→PTA syslog (`PTACertificates`, `VaultPTASyslog`) after PTA.
 
 ### Individual steps
 
@@ -240,7 +241,8 @@ CyberArk-specific settings — Vault address, admin credentials, component insta
 .\Deploy-Lab.ps1 -Steps PVWAInstall
 .\Deploy-Lab.ps1 -Steps CPMInstall
 .\Deploy-Lab.ps1 -Steps PSMInstall
-.\Deploy-Lab.ps1 -Steps CreatePTAVM, PTAInstall
+.\Deploy-Lab.ps1 -Steps VaultADObjects, VaultLDAP
+.\Deploy-Lab.ps1 -Steps CreatePTAVM, PTAInstall, PTACertificates, VaultPTASyslog
 .\Deploy-Lab.ps1 -Steps CreatePSMPVM, PSMPInstall
 ```
 
@@ -329,23 +331,6 @@ Multiple steps can be combined:
 - Prepares the secondary host for replication and minimal PTA DB operation
 - Opens TCP 27017 (MongoDB replication) required for DR pairing
 
-### `Scripts\Configure-PTACertificates.ps1` — PTA CA Certificates (optional / DR)
-Exposed as the **`PTACertificates`** feature of `Deploy-Optional.ps1`; also runnable directly.
-- Fully automates issuing CA-signed certificates to PTA from the lab's DC01 Enterprise CA — no manual CSR handling
-- Configures the CA: enables SAN-from-request, republishes the CRL, and adds **Client Authentication** EKU to the WebServer template (required — MongoDB DR replication uses the cert as a client cert)
-- Creates the shared DR DNS record (`pta.cyberark.lab` → Primary IP) on DC01
-- Per PTA server: syncs the clock, generates a CSR, submits it to the CA (`certreq`), and installs the signed chain (root exported as PEM)
-- Stores the Vault admin credential in a PVWA safe via REST API as a secure-retrieval demonstration
-- Usage: `.\Deploy-Optional.ps1 -Feature PTACertificates -PTAPrimaryName PTA01 -PTASecondaryName PTA02` (omit secondary for a single PTA)
-
-### `Scripts\Configure-VaultSyslogToPTA.ps1` — Vault → PTA Syslog (session monitoring)
-Exposed as the **`VaultPTASyslog`** feature of `Deploy-Optional.ps1`; also runnable directly. Configures the complete Vault→PTA syslog chain so PSM session and Vault audit events reach PTA:
-- **PTA side** (via SSH): sets `syslog_inbound` to a plain-TCP listener on 11514 (drops the same-port TLS entry) and `enable_client_verification=false`, then restarts `appmgr` so the unsecured listener binds
-- **Vault side** (via vmrun): adds the `AllowNonStandardFWAddresses` rule to `dbparm.ini [MAIN]` (the Vault's hardened firewall blocks its own outbound syslog without it) and writes the `[SYSLOG]` section (`Syslog\PTA.xsl`, PTA IP/port/protocol, message-code filter), then restarts the Vault
-- Verifies `Test-NetConnection` Vault→PTA succeeds; backs up both config files first
-- Defaults to `11514/TCP` (unsecured, lab). For a secured channel use TLS + a trusted connection
-- Usage: `.\Deploy-Optional.ps1 -Feature VaultPTASyslog` (or `-SyslogPort 11514 -SyslogProtocol TCP`)
-
 ### `Scripts\12-CreatePSMPVM.ps1` — Create PSMP01 VM
 - Creates a Rocky Linux 9 VM (PSMP01) using a kickstart-based unattended install
 - Configures static IP `192.168.100.50`, SSH key pair for automation
@@ -353,6 +338,50 @@ Exposed as the **`VaultPTASyslog`** feature of `Deploy-Optional.ps1`; also runna
 ### `Scripts\13-InstallPSMP.ps1` — Install PSMP
 - Copies PSMP installer to PSMP01 via SCP
 - Installs PSMP and registers it with Vault
+
+### `Scripts\14-ConfigurePTACertificates.ps1` — PTA CA Certificates (DR-ready)
+Runs in `-Steps Full` after PTAInstall (step **`PTACertificates`**); also the **`PTACertificates`** feature of `Deploy-Optional.ps1` and runnable directly.
+- Fully automates issuing CA-signed certificates to PTA from the lab's DC01 Enterprise CA — no manual CSR handling
+- Configures the CA: enables SAN-from-request, republishes the CRL, and adds **Client Authentication** EKU to the WebServer template (required — MongoDB DR replication uses the cert as a client cert)
+- Creates the shared DR DNS record (`pta.cyberark.lab` → Primary IP) on DC01
+- Per PTA server: syncs the clock, generates a CSR, submits it to the CA (`certreq`), and installs the signed chain (root exported as PEM)
+- Usage: `.\Deploy-Optional.ps1 -Feature PTACertificates -PTAPrimaryName PTA01 -PTASecondaryName PTA02` (omit secondary for a single PTA)
+
+### `Scripts\15-ConfigureVaultSyslogToPTA.ps1` — Vault → PTA Syslog (session monitoring)
+Runs in `-Steps Full` after `PTACertificates` (step **`VaultPTASyslog`**); also the **`VaultPTASyslog`** feature of `Deploy-Optional.ps1` and runnable directly. Configures the complete Vault→PTA syslog chain so PSM session and Vault audit events reach PTA:
+- **PTA side** (via SSH): sets `syslog_inbound` to a plain-TCP listener on 11514 (drops the same-port TLS entry) and `enable_client_verification=false`, then restarts `appmgr` so the unsecured listener binds
+- **Vault side** (via vmrun): adds the `AllowNonStandardFWAddresses` rule to `dbparm.ini [MAIN]` (the Vault's hardened firewall blocks its own outbound syslog without it) and writes the `[SYSLOG]` section (`Syslog\PTA.xsl`, PTA IP/port/protocol, message-code filter), then restarts the Vault
+- Verifies `Test-NetConnection` Vault→PTA succeeds; backs up both config files first
+- Defaults to `11514/TCP` (unsecured, lab). For a secured channel use TLS + a trusted connection
+- Usage: `.\Deploy-Optional.ps1 -Feature VaultPTASyslog` (or `-SyslogPort 11514 -SyslogProtocol TCP`)
+
+### `Scripts\16-CreateVaultADObjects.ps1` — Vault AD objects (LDAP integration, part 1)
+Runs in `-Steps Full` after PSMInstall (step **`VaultADObjects`**); also the **`VaultADObjects`** feature of `Deploy-Optional.ps1`. ActiveDirectory module + `dsacls` on DC01 only; idempotent.
+- **LDAP bind account** `svc-cybr-ldap` ("CyberArk LDAP Bind") in `OU=ServiceAccounts` at the domain root, password never expires, **List Contents** on the domain root (read-only, nothing more). Verifies the credentials with a real LDAP simple bind on 389 — the same bind the Vault does
+- **Vault role groups** `Lab-Vault-Admins` / `-Users` / `-Auditors` / `-SafeManagers` in `OU=CyberArk` — a group found elsewhere (e.g. `CN=Users` from older versions) is **moved**, keeping its SID and members
+- **Users** `vault_admin1..N`, `vault_user1..N`, `vault_auditor1..N`, `vault_safemgr1..N` in `OU=CyberArk`, each in its role group (`-UsersPerGroup`, default 10)
+- `-ResetBindPassword` sets an existing bind user's password to `-BindPassword` (use when the account exists with an unknown password — the bind check warns you)
+
+### `Scripts\17-ConfigureVaultLDAP.ps1` — Vault LDAP directory + mappings (LDAP integration, part 2)
+Runs in `-Steps Full` after `VaultADObjects` (step **`VaultLDAP`**); also the **`VaultLDAP`** feature of `Deploy-Optional.ps1`. Plain LDAP (389) — LDAPS is deliberately not used in the lab. Idempotent.
+- **Vault side** (via vmrun): hosts-file entry for `dc01.cyberark.lab` (the hardened Vault has no working DNS path) and `AllowNonStandardFWAddresses=[<DC IP>],Yes,389:outbound/tcp` under `dbparm.ini [MAIN]` — without it the Vault's own firewall blocks the LDAP connection. `dbparm.ini` is backed up and the Vault restarted **only** when the rule is new
+- **PVWA side** (REST): stores the bind account in `VaultInternal` on the shared **`Win-Dom-SvcAcc`** platform (see [Service-account platform](#svcacc-platform); **automatic management off** so the CPM never rotates a password the directory depends on); creates the `cyberark.lab` directory → `dc01.cyberark.lab:389`; enables the LDAP authentication method; creates the mappings:
+
+  | Mapping | AD group | Vault group | Authorizations |
+  |---|---|---|---|
+  | Lab Vault Admins | Lab-Vault-Admins | Vault Admins | Add/Update Users, Add Safes, Add Network Areas, Manage Server File Categories, Audit Users, Reset Users' Passwords, Activate Users |
+  | Lab Vault Auditors | Lab-Vault-Auditors | Auditors | Audit Users |
+  | Lab Vault Safe Managers | Lab-Vault-SafeManagers | — | Add Safes |
+  | Lab Vault Users | Lab-Vault-Users | — | logon only |
+- **Verifies** by logging on to PVWA via LDAP as `vault_admin1`, `vault_auditor1`, `vault_safemgr1`, `vault_user1` (`-SkipLogonTest` to skip)
+- Verified against a live lab (PVWA/Vault 15.0.2); not yet exercised inside a from-scratch `-Steps Full` run — feedback welcome
+
+<a id="svcacc-platform"></a>
+### Service-account platform `Win-Dom-SvcAcc` (`Helpers\PVWAHelper.psm1`)
+All Windows domain service accounts the lab stores in PVWA (LDAP bind via `VaultLDAP`, `ReconcileAccount`, `DiscoveryAccount`) share **one** platform, `Win-Dom-SvcAcc`, duplicated from **`WinDomain`** (Windows Domain Account) — the default platform itself is never used directly. Created on first use via PVWA REST (`/api/Platforms/targets/{id}/duplicate`); an account found on another platform is moved onto it.
+- `WinDomain` is a **CyberArk Marketplace** package (community-account download) and is **not shipped** with this repo. Import it in PVWA yourself, or pass `-WinDomainZipPath <your downloaded zip>` (script 17 / `Deploy-Optional.ps1`) to have it imported
+- If `WinDomain` is not in the Vault and no zip is given, `Win-Dom-SvcAcc` is duplicated from the built-in `WindowsDomainLDAP` instead, with a warning — so `-Steps Full` still completes on a fresh lab
+- Override the name with `-PlatformId` (script 17) / `-SvcAccPlatformId` (`Deploy-Optional.ps1`)
 
 ### Conjur Enterprise cluster (`Scripts\30`–`41`, optional add-on)
 
@@ -375,12 +404,12 @@ Exposed as the **`VaultPTASyslog`** feature of `Deploy-Optional.ps1`; also runna
 
 ### `Deploy-Optional.ps1` — Optional lab features (AD / LDAP / reconcile)
 Single menu/parameter-driven entry point for **opt-in** add-ons that are not part of the base lab. Supported tooling only (ActiveDirectory module on DC01 + PVWA REST) — nothing edited on the appliances, so it's redeploy/upgrade safe. Every feature is idempotent.
-- **VaultADObjects** — AD OU + the four Vault role groups (Admins/Users/Auditors/SafeManagers) populated with users (`vault_admin1..N`, etc.)
-- **LDAPBindUser** — least-privilege AD bind user (List-Contents) stored as a PVWA account (for Vault/PTA LDAP); optional `-GrantPTAAppUserRead`
-- **ReconcileAccount** — AD reconcile account (Reset-Password + pwdLastSet rights) stored in PVWA
-- **DiscoveryAccount** — AD accounts-discovery scan account (`svc-discovery`) stored in PVWA
-- **PTACertificates** — issue + install CA-signed PTA certs from DC01 (DR-ready) — dispatches to `Scripts\Configure-PTACertificates.ps1`
-- **VaultPTASyslog** — configure Vault→PTA syslog forwarding — dispatches to `Scripts\Configure-VaultSyslogToPTA.ps1`
+- **VaultADObjects** — LDAP bind user + the four Vault role groups populated with users — dispatches to `Scripts\16-CreateVaultADObjects.ps1` (`-ResetBindPassword` available)
+- **VaultLDAP** — Vault LDAP directory (389) + AD-group→Vault mappings via PVWA, bind account stored in `VaultInternal` — dispatches to `Scripts\17-ConfigureVaultLDAP.ps1`; optional `-GrantPTAAppUserRead`
+- **ReconcileAccount** — AD reconcile account (Reset-Password + pwdLastSet rights) stored in PVWA, in safe `Lab-ServiceAccounts` (created if missing, managed by the logged-on CPM so the CPM can use the account)
+- **DiscoveryAccount** — AD accounts-discovery scan account (`svc-discovery`) stored in PVWA, in the same `Lab-ServiceAccounts` safe
+- **PTACertificates** — issue + install CA-signed PTA certs from DC01 (DR-ready) — dispatches to `Scripts\14-ConfigurePTACertificates.ps1`
+- **VaultPTASyslog** — configure Vault→PTA syslog forwarding — dispatches to `Scripts\15-ConfigureVaultSyslogToPTA.ps1`
 - **ConjurNodes** — generalize `CONJUR-L01` and clone S01/S02/F01/F02/APP01 (see [Conjur Enterprise cluster](#conjur-cluster-deploy))
 - **LoadBalancer** — generic, reusable HAProxy pool configurator (not Conjur-specific) — used for the Conjur leader/follower pools on APP01, reusable later for PVWA/PSM pools
 - **ConjurSystemFolders** — create the `/opt/cyberark/conjur/{security,config,backup,seeds,logs}` folder set on every Conjur appliance node
@@ -397,14 +426,14 @@ Single menu/parameter-driven entry point for **opt-in** add-ons that are not par
 ```powershell
 .\Deploy-Optional.ps1                                   # interactive menu
 .\Deploy-Optional.ps1 -ListFeatures
-.\Deploy-Optional.ps1 -Feature VaultADObjects,LDAPBindUser -GrantPTAAppUserRead
+.\Deploy-Optional.ps1 -Feature VaultADObjects,VaultLDAP -GrantPTAAppUserRead
 .\Deploy-Optional.ps1 -Feature ReconcileAccount
 .\Deploy-Optional.ps1 -Feature DiscoveryAccount
 .\Deploy-Optional.ps1 -Feature PTACertificates -PTAPrimaryName PTA01 -PTASecondaryName PTA02
 .\Deploy-Optional.ps1 -Feature VaultPTASyslog
 .\Deploy-Optional.ps1 -Feature ConjurLoadRootPolicy
 ```
-> The final config — Vault external directory + AD-group→authorization mapping, linking the reconcile account to a platform, and referencing the discovery account in an Accounts Discovery scan (plus scan rights on the targets) — is done in PrivateArk Client / PVWA (supported UI; no REST endpoint), so it is not scripted.
+> The remaining config — linking the reconcile account to a platform, and referencing the discovery account in an Accounts Discovery scan (plus scan rights on the targets) — is done in PrivateArk Client / PVWA (supported UI; no REST endpoint), so it is not scripted.
 
 ---
 
@@ -532,6 +561,8 @@ CyberArk-VMware-Lab\
 │   ├── GuestHelper.psm1        # Guest file copy, WinRM helpers
 │   ├── RemotingHelper.psm1     # PowerShell remoting helpers
 │   ├── NetworkHelper.psm1      # Network connectivity helpers
+│   ├── PVWAHelper.psm1         # Shared service-account platform (Win-Dom-SvcAcc) helpers
+│   ├── PTAInstallerWizard.py   # Runs ON PTA01: drives the installer.war wizard (called by 11-InstallPTA-Primary)
 │   ├── setup.iss               # Recorded silent install — Vault server
 │   └── Setup-client.iss        # Recorded silent install — PrivateArk Client
 ├── Scripts\
@@ -546,11 +577,13 @@ CyberArk-VMware-Lab\
 │   ├── 10-CreatePTAVM.ps1
 │   ├── 11-InstallPTA-Primary.ps1
 │   ├── 11-InstallPTA-Secondary.ps1
-│   ├── Configure-PTACertificates.ps1
-│   ├── Configure-VaultSyslogToPTA.ps1
 │   ├── README-PTA-DR.md          # PTA Disaster Recovery guide
 │   ├── 12-CreatePSMPVM.ps1
 │   ├── 13-InstallPSMP.ps1
+│   ├── 14-ConfigurePTACertificates.ps1
+│   ├── 15-ConfigureVaultSyslogToPTA.ps1
+│   ├── 16-CreateVaultADObjects.ps1
+│   ├── 17-ConfigureVaultLDAP.ps1
 │   ├── 29-CreateConjurL01VM.ps1       ┐
 │   ├── 30-CloneConjurNodes.ps1        │
 │   ├── Register-RHSM.ps1              │

@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- `Deploy-Optional.ps1`: **ReconcileAccount** and **DiscoveryAccount** store their accounts in a separate safe `Lab-ServiceAccounts` instead of `VaultInternal`. The safe is created if missing and managed by the logged-on CPM. In `VaultInternal` (no managing CPM) the CPM could not use the reconcile account, so every reconcile failed. `VaultInternal` stays reserved for the LDAP bind account. Existing labs: rerun both features, then remove the old copies from `VaultInternal`.
+
+## [1.7.0] - 2026-09-24
+
+### Added
+- **Vault LDAP integration, end to end.** Two numbered scripts that take a lab from zero to working AD logon to PVWA, both run by `Deploy-Lab.ps1 -Steps Full` and exposed as `Deploy-Optional.ps1` features:
+  - `Scripts\16-CreateVaultADObjects.ps1` (step/feature **VaultADObjects**) — LDAP bind account `svc-cybr-ldap` in `OU=ServiceAccounts` with List Contents on the domain root, plus the four `Lab-Vault-*` role groups and their `vault_*` users in `OU=CyberArk`. Groups found elsewhere (e.g. `CN=Users`) are moved, keeping SID and membership. Checks the bind credentials with a real LDAP simple bind; `-ResetBindPassword` for an existing account with an unknown password.
+  - `Scripts\17-ConfigureVaultLDAP.ps1` (step/feature **VaultLDAP**) — Vault hosts entry for DC01 + `dbparm.ini [MAIN] AllowNonStandardFWAddresses=[<DC IP>],Yes,389:outbound/tcp` (Vault restarted only when the rule is new); bind account stored in `VaultInternal`; PVWA LDAP directory (plain LDAP, 389); LDAP auth method enabled; four directory mappings (Vault Admins / Auditors / Add Safes / logon-only); verified by an LDAP logon per role. Verified on a live 15.0.2 lab; not yet run inside a from-scratch `-Steps Full` — feedback welcome.
+- `Deploy-Lab.ps1` steps **VaultADObjects**, **VaultLDAP** (after PSMInstall) and **PTACertificates**, **VaultPTASyslog** (after PTAInstall), all part of `-Steps Full`.
+- **Shared service-account platform `Win-Dom-SvcAcc`** (`Helpers\PVWAHelper.psm1`) — one platform for every lab Windows domain service account (LDAP bind, reconcile, discovery), duplicated from the Marketplace **WinDomain** platform via PVWA REST; existing accounts on another platform are moved onto it. WinDomain is not redistributable, so it is never shipped: pass `-WinDomainZipPath` to import it, otherwise `Win-Dom-SvcAcc` is duplicated from the built-in `WindowsDomainLDAP` with a warning.
+
+- `04-DeployDC.ps1` Step 4: DC01 syncs time from `pool.ntp.org` / `time.windows.com` and is marked a reliable time source (inbound UDP 123 allowed). Without an external peer it free-ran off the VM clock, and lab clocks drifted (wrong event timestamps on PTA).
+
+### Changed
+- Moved `Scripts\pta_configure_installer.py` → `Helpers\PTAInstallerWizard.py` (support file run on PTA01 by `11-InstallPTA-Primary.ps1`, not a deployment step; it now sits with the other non-step helpers).
+- Renamed `Scripts\Configure-PTACertificates.ps1` → `Scripts\14-ConfigurePTACertificates.ps1` and `Scripts\Configure-VaultSyslogToPTA.ps1` → `Scripts\15-ConfigureVaultSyslogToPTA.ps1` — they now continue the numbered sequence and run in `-Steps Full`.
+- `Deploy-Optional.ps1`: **VaultADObjects** now dispatches to script 16 instead of carrying its own inline copy (the inline copy had drifted — it put the bind user in `CN=Users`).
+- `Deploy-Optional.ps1`: feature **LDAPBindUser** renamed to **VaultLDAP** and dispatches to script 17, which does everything LDAPBindUser did plus the directory and mappings. The bind account is stored on `Win-Dom-SvcAcc` with automatic management off.
+- `Deploy-Optional.ps1`: **ReconcileAccount** and **DiscoveryAccount** store their accounts on `Win-Dom-SvcAcc` instead of `WinDomain` (which a stock 15.x Vault does not have, so account creation failed there). When the PVWA account is first created, the AD password is reset to the stored value so the two start in sync (an AD account that pre-existed with another password no longer ends up stored wrongly); later runs never reset it. `-DiscoveryPassword` now defaults to `Cyberark!Local2024`.
+
+### Removed
+- `14-ConfigurePTACertificates.ps1` Step 0 (copy of the Vault `Administrator` password stored as `VaultAdmin-PTA` in safe `PTA-Automation`) and the `PTA.Certificate.SafeName`/`AccountName` config keys. The stored copy was never read back — Step 2g always used the config password — and on a stock 15.x Vault the account creation failed (`WinDomain` platform missing), leaving an empty `PTA-Automation` safe behind. Script 14 no longer needs PVWA.
+
+### Fixed
+- `14-ConfigurePTACertificates.ps1`: the CSR/cert-install wrappers wrote `echo csr_exit:\$?` inside a PowerShell here-string, so PowerShell expanded `$?` itself (`True`) and the real exit code was never captured — the CSR step always printed a false "non-zero exit" warning, and the install step only passed via its success-text fallback. Now `` `$? ``.
+- `15-ConfigureVaultSyslogToPTA.ps1`: rewriting `systemparm.properties` via temp file + `mv` left it owned by `root:root`; it now restores `ptaapp:pta_server` (+ `restorecon`). Matters for DR — `drfilessync` copies the file as-is to the secondary.
+- `11-InstallPTA-Primary.ps1` on PowerShell 7: the PVWA certificate bypass used `ICertificatePolicy`/`Add-Type`, which only works on Windows PowerShell 5.1. Every PVWA call now uses `-SkipCertificateCheck`, like the rest of the repo. Also removed the `personalSafe` step: that field does not exist on `/api/Users` (PVWA silently drops it). CasosServices only needs the PTA safe to exist with PTAAppUser as a member, which the earlier sub-steps already do.
+- `Helpers\PTAInstallerWizard.py`: re-registering an already-installed PTA did nothing, because this installer version answers `DELETE /api/installation/` with HTTP 405. The wizard state is now reset where it is actually stored: `remote_installation_status=NOT_STARTED` in `systemparm.properties`, with a backup, `ptaapp:pta_server` ownership kept, and a `ptaweb` restart.
+- `40-InstallVaultConjurSynchronizer.ps1`: the installer run could hang forever with no output. Stdout was read to the end while stderr was redirected but never drained, a classic .NET Process pipe deadlock. Both streams are now read asynchronously.
+- `40-InstallVaultConjurSynchronizer.ps1`: an installed but Stopped Synchronizer service no longer counts as "done". After a Vault rebuild the service survives but its Safe and LOB user are gone, so the script now checks that they exist, as the fresh-install path does.
+
 ## [1.6.0] - 2026-07-30
 
 ### Added
