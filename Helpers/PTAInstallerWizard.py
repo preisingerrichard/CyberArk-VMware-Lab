@@ -10,9 +10,38 @@ NOTE: no usage guard - without arguments it runs the wizard with built-in defaul
 Usage: python3 PTAInstallerWizard.py <vault_ip> <vault_pass> <pvwa_host> <root_pass> [admin_user] [timezone]
 """
 import json
+import shutil
 import subprocess
 import sys
 import time
+
+SYSTEMPARM_PATH = "/etc/opt/pta/diamond-resources/local/systemparm.properties"
+
+
+def force_reset_wizard_state():
+    """
+    Fallback when DELETE /api/installation/ isn't supported (HTTP 405 - real,
+    confirmed live: this installer.war version only allows GET/HEAD/POST/OPTIONS
+    on that endpoint despite the code assuming DELETE resets it). The wizard's
+    completion marker actually lives in systemparm.properties
+    (remote_installation_status=SUCCESS|FAILED|NOT_STARTED), read by Tomcat at
+    startup - editing it and restarting ptaweb is the real reset mechanism.
+    """
+    print("    DELETE unsupported/ineffective - falling back to systemparm.properties reset...")
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    shutil.copy2(SYSTEMPARM_PATH, f"{SYSTEMPARM_PATH}.bak_pre_reregister_{stamp}")
+    with open(SYSTEMPARM_PATH, "r") as f:
+        lines = f.readlines()
+    with open(SYSTEMPARM_PATH, "w") as f:
+        for line in lines:
+            if line.startswith("remote_installation_status="):
+                f.write("remote_installation_status=NOT_STARTED\n")
+            else:
+                f.write(line)
+    subprocess.run(["chown", "ptaapp:pta_server", SYSTEMPARM_PATH], check=False)
+    subprocess.run(["systemctl", "restart", "ptaweb"], check=True)
+    print("    Waiting for ptaweb to come back up...")
+    time.sleep(20)
 
 VAULT_IP         = sys.argv[1] if len(sys.argv) > 1 else "192.168.100.20"
 VAULT_ADMIN_PASS = sys.argv[2] if len(sys.argv) > 2 else "Cyberark1"
@@ -116,6 +145,22 @@ if current_state in ("SUCCESS", "FAILED"):
     time.sleep(5)
     status, body = curl_req("GET", f"{BASE_URL}/api/installation/", headers=auth_hdrs)
     print(f"    State after reset: {body[:200]}")
+    try:
+        state_after_delete = json.loads(body).get("status", "UNKNOWN")
+    except Exception:
+        state_after_delete = "UNKNOWN"
+    if state_after_delete in ("SUCCESS", "FAILED"):
+        # Confirmed live: this installer.war version's /api/installation/ only
+        # allows GET/HEAD/POST/OPTIONS (HTTP 405 on DELETE) - the reset above
+        # is a no-op on this version. Real fix lives in systemparm.properties.
+        force_reset_wizard_state()
+        status, body = curl_req("POST", f"{BASE_URL}/api/getauthtoken",
+                                data=form_data, content_type="application/x-www-form-urlencoded", timeout=30)
+        if status == 200:
+            token = json.loads(body)["Authorization"]
+            auth_hdrs = {"Authorization": f"Bearer {token}"}
+        status, body = curl_req("GET", f"{BASE_URL}/api/installation/", headers=auth_hdrs)
+        print(f"    State after systemparm.properties reset: {body[:200]}")
 elif current_state in ("RUNNING",):
     print("    Wizard is running -- waiting for it to finish before overwriting...")
     for _ in range(30):

@@ -604,20 +604,14 @@ Write-Host "  [6e] Setting PTAAppUser personal safe..." -ForegroundColor DarkGra
 if (-not $pvwaVM) {
     Write-Warning "No PVWA VM configured - skipping personal safe setup (CasosServices will fail)"
 } else {
-    # PS 5.1 TLS bypass for the PVWA's self-signed certificate
-    if (-not ([System.Management.Automation.PSTypeName]'Pta11TrustAll').Type) {
-        Add-Type -TypeDefinition @"
-using System.Net;
-using System.Security.Cryptography.X509Certificates;
-public class Pta11TrustAll : ICertificatePolicy {
-    public bool CheckValidationResult(ServicePoint srvPoint, X509Certificate cert, WebRequest req, int problem) {
-        return true;
-    }
-}
-"@ -ErrorAction SilentlyContinue
-    }
-    [System.Net.ServicePointManager]::CertificatePolicy = New-Object Pta11TrustAll
-    [System.Net.ServicePointManager]::SecurityProtocol  = [System.Net.SecurityProtocolType]::Tls12
+    # TLS bypass for the PVWA's self-signed certificate, via -SkipCertificateCheck
+    # on each Invoke-WebRequest call below (PowerShell 7+ only, matches the rest
+    # of this repo). Real bugs found live, in order: the original
+    # ICertificatePolicy/Add-Type approach is Windows-PowerShell-5.1-only (removed
+    # from .NET Core, Add-Type fails to compile under PS7); its replacement,
+    # ServicePointManager.ServerCertificateValidationCallback, compiles fine but
+    # the handshake still failed ("SSL connection could not be established") --
+    # per-request -SkipCertificateCheck is what actually works here.
 
     $pvwaBase  = "https://$($pvwaVM.IPAddress)/PasswordVault"
     $ptaUser   = "PTAAppUser"
@@ -629,7 +623,7 @@ public class Pta11TrustAll : ICertificatePolicy {
         # Authenticate
         $logonBody = @{ username = $adminUser; password = $vaultPass; concurrentSession = $true } | ConvertTo-Json
         $logonResp = Invoke-WebRequest -Uri "$pvwaBase/api/auth/Cyberark/Logon" `
-            -Method POST -Body $logonBody -ContentType "application/json" -UseBasicParsing
+            -Method POST -Body $logonBody -ContentType "application/json" -UseBasicParsing -SkipCertificateCheck
         $pvwaToken = $logonResp.Content.Trim('"')
         $pvwaHdrs  = @{ Authorization = $pvwaToken }
         Write-Host "    Authenticated to PVWA" -ForegroundColor DarkGray
@@ -637,7 +631,7 @@ public class Pta11TrustAll : ICertificatePolicy {
         # (a) Create safe if it does not already exist
         try {
             $null = Invoke-WebRequest -Uri "$pvwaBase/api/Safes/$ptaSafe" `
-                -Method GET -Headers $pvwaHdrs -UseBasicParsing
+                -Method GET -Headers $pvwaHdrs -UseBasicParsing -SkipCertificateCheck
             Write-Host "    Safe '$ptaSafe' already exists" -ForegroundColor DarkGray
         } catch {
             $safeBody = @{
@@ -647,7 +641,7 @@ public class Pta11TrustAll : ICertificatePolicy {
             } | ConvertTo-Json
             try {
                 $null = Invoke-WebRequest -Uri "$pvwaBase/api/Safes" -Method POST `
-                    -Body $safeBody -ContentType "application/json" -Headers $pvwaHdrs -UseBasicParsing
+                    -Body $safeBody -ContentType "application/json" -Headers $pvwaHdrs -UseBasicParsing -SkipCertificateCheck
                 Write-Host "    Created safe '$ptaSafe'" -ForegroundColor DarkGray
             } catch {
                 Write-Host "    Safe create: $($_.Exception.Message)" -ForegroundColor DarkGray
@@ -684,7 +678,7 @@ public class Pta11TrustAll : ICertificatePolicy {
         } | ConvertTo-Json -Depth 5
         try {
             $null = Invoke-WebRequest -Uri "$pvwaBase/api/Safes/$ptaSafe/Members" -Method POST `
-                -Body $memberBody -ContentType "application/json" -Headers $pvwaHdrs -UseBasicParsing
+                -Body $memberBody -ContentType "application/json" -Headers $pvwaHdrs -UseBasicParsing -SkipCertificateCheck
             Write-Host "    Added $ptaUser as safe member" -ForegroundColor DarkGray
         } catch {
             $mCode = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
@@ -695,9 +689,25 @@ public class Pta11TrustAll : ICertificatePolicy {
             }
         }
 
-        # (c) Locate PTAAppUser's vault user ID
+        # (c) Locate PTAAppUser's vault user ID, just to confirm it exists.
+        #
+        # Real finding, confirmed live: there is no settable "personalSafe"
+        # field on this PVWA version's /api/Users at all - GET never returns
+        # one, and PUT-ing a user object with personalSafe bolted on returns
+        # HTTP 200 with the field silently dropped from the response (PVWA
+        # ignores unknown properties rather than rejecting them). The prior
+        # version of this step chased that field for several iterations
+        # ("PVWA API did not persist PersonalSafe") when it was never real to
+        # begin with - CasosServices doesn't read a PersonalSafe attribute.
+        # What actually mattered was (a)/(b) above: CasosServices' SafeOneList
+        # call needs the safe to genuinely exist with PTAAppUser as a member.
+        # Confirmed by watching /var/log/pta/casosServices/casosservices.log
+        # directly on PTA01: before the safe/membership existed, it logged
+        # "SafeOneList failed. Killing process" and crash-looped every ~5 min
+        # (systemd NRestarts climbing); after (a)/(b) ran and the service was
+        # restarted, NRestarts stayed at 0 with no further SafeOneList errors.
         $searchResp = Invoke-WebRequest -Uri "$pvwaBase/api/Users?search=$ptaUser" `
-            -Method GET -Headers $pvwaHdrs -UseBasicParsing
+            -Method GET -Headers $pvwaHdrs -UseBasicParsing -SkipCertificateCheck
         $userList   = $searchResp.Content | ConvertFrom-Json
         $users      = if ($userList.Users) { $userList.Users } else { @() }
         $ptaUserObj = $users | Where-Object { $_.username -ieq $ptaUser } | Select-Object -First 1
@@ -705,40 +715,14 @@ public class Pta11TrustAll : ICertificatePolicy {
         if (-not $ptaUserObj) {
             Write-Warning "PTAAppUser not found in vault -- pasConfiguration.sh may not have run cleanly"
         } else {
-            Write-Host "    Found $ptaUser (id: $($ptaUserObj.id), personalSafe now: '$($ptaUserObj.personalSafe)')" -ForegroundColor DarkGray
-
-            # (d) Set the PersonalSafe vault attribute.
-            # PUT /api/Users requires the full user object - partial bodies return 400.
-            # GET the full representation first, patch personalSafe, then PUT it back.
-            $fullUserResp = Invoke-WebRequest -Uri "$pvwaBase/api/Users/$($ptaUserObj.id)" `
-                -Method GET -Headers $pvwaHdrs -UseBasicParsing
-            $fullUser = $fullUserResp.Content | ConvertFrom-Json
-            $fullUser | Add-Member -MemberType NoteProperty -Name personalSafe -Value $ptaSafe -Force
-            $updateBody = $fullUser | ConvertTo-Json -Depth 10
-            try {
-                $null = Invoke-WebRequest -Uri "$pvwaBase/api/Users/$($ptaUserObj.id)" -Method PUT `
-                    -Body $updateBody -ContentType "application/json" -Headers $pvwaHdrs -UseBasicParsing
-            } catch {
-                Write-Host "    PUT /Users: $($_.Exception.Message)" -ForegroundColor DarkGray
-            }
-
-            # (e) Verify the attribute was actually persisted
-            $verifyResp = Invoke-WebRequest -Uri "$pvwaBase/api/Users/$($ptaUserObj.id)" `
-                -Method GET -Headers $pvwaHdrs -UseBasicParsing
-            $verified = $verifyResp.Content | ConvertFrom-Json
-            if ($verified.personalSafe -ieq $ptaSafe) {
-                Write-Host "  [OK] PTAAppUser.PersonalSafe = '$ptaSafe' confirmed via PVWA API" -ForegroundColor Green
-            } else {
-                Write-Warning "PVWA API did not persist PersonalSafe (got: '$($verified.personalSafe)')"
-                Write-Warning "CasosServices will not connect until PersonalSafe is set on PTAAppUser"
-            }
+            Write-Host "  [OK] $ptaUser (id: $($ptaUserObj.id)) confirmed, member of safe '$ptaSafe'" -ForegroundColor Green
         }
     } catch {
         Write-Warning "Step 6e error: $($_.Exception.Message)"
     } finally {
         if ($pvwaToken) {
             $null = Invoke-WebRequest -Uri "$pvwaBase/api/auth/Logoff" -Method POST `
-                -Headers @{ Authorization = $pvwaToken } -UseBasicParsing -ErrorAction SilentlyContinue
+                -Headers @{ Authorization = $pvwaToken } -UseBasicParsing -SkipCertificateCheck -ErrorAction SilentlyContinue
         }
     }
 }
@@ -876,12 +860,20 @@ if ($deployResult.Output -match 'deploy_exit:0') {
     Write-Warning "Manual fix: ssh root@$ptaIP then: bash $deployUtil"
 }
 
-# Step 6i: Restart PTA services to apply all configuration changes
+# Step 6i: Restart PTA services to apply all configuration changes.
+# CasosServices specifically needs a restart here: it reads Vault safe
+# membership (PTAAppUser / $ptaSafe, set in step 6e above) once at startup,
+# so if the safe/membership didn't exist yet on its last start it will be
+# crash-looping ("SafeOneList failed. Killing process" in
+# /var/log/pta/casosServices/casosservices.log, confirmed live) until
+# restarted fresh against the now-correct Vault state.
 Write-Host "  [6i] Restarting PTA services..." -ForegroundColor DarkGray
-Invoke-PTASSH -Command "systemctl restart appmgr 2>/dev/null; true" -TimeoutSec 90 -NoThrow | Out-Null
+Invoke-PTASSH -Command "systemctl restart appmgr ptacasosservicesd 2>/dev/null; true" -TimeoutSec 90 -NoThrow | Out-Null
 Start-Sleep -Seconds 20
 $svcStatus = Invoke-PTASSH -Command "systemctl is-active ptaweb.service 2>/dev/null || echo unknown" -NoThrow
 Write-Host "  ptaweb status: $($svcStatus.Output -join '')" -ForegroundColor DarkGray
+$casosStatus = Invoke-PTASSH -Command "systemctl show ptacasosservicesd -p NRestarts --value 2>/dev/null || echo unknown" -NoThrow
+Write-Host "  CasosServices NRestarts since this start: $($casosStatus.Output -join '')" -ForegroundColor DarkGray
 
 # Step 6j: Wait for ptaweb on port $ptaPort
 Write-Host "  [6j] Waiting for PTA web on port $ptaPort..." -ForegroundColor DarkGray
