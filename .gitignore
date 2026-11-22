@@ -9,7 +9,9 @@ ISO/
 
 # ── Claude Code project files ────────────────────────────────────
 .claude/
-# Personal Claude context (lab state, private areas) - CLAUDE.md itself is public
+# Claude context lives in .claude/ (CLAUDE.md + rules/) and is private.
+# Guard: never commit a copy created in the root either.
+CLAUDE.md
 CLAUDE.local.md
 
 # ── Runtime state (generated during deployment) ──────────────────
