@@ -171,10 +171,19 @@ if ($svcCheck.ExitCode -eq 0) {
     Write-Host "  Synchronizer service already installed and running - nothing to do." -ForegroundColor Yellow
     exit 0
 }
+# Real bug found live: exit code 2 (service installed but Stopped) used to
+# exit 0 here unconditionally on the assumption that a Stopped-but-present
+# service means the earlier install fully succeeded. That's wrong whenever
+# the Vault itself was rebuilt/recreated afterward - the Windows service
+# binary survives, but its entire Vault-side identity (Safe, LOB user,
+# ConjurHost account) is gone, and the service was never touched to reflect
+# that, so it just sits Stopped indefinitely. Confirmed live: after a Vault
+# rebuild, both the Safe and LOB Vault User were confirmed absent (404 /
+# empty search) while this check still reported "nothing to do." Now falls
+# through to the same Safe/LOB existence check the fresh-install path uses -
+# only a service that's both installed AND has a live Safe+LOB is truly done.
 if ($svcCheck.ExitCode -eq 2) {
-    Write-Host "  Synchronizer service already installed (currently Stopped) - nothing to do. Start it manually if it needs to be actively syncing:" -ForegroundColor Yellow
-    Write-Host "    Start-Service -Name CyberArkVaultConjurSynchronizer   (run on COMP01)" -ForegroundColor Yellow
-    exit 0
+    Write-Host "  Synchronizer service installed but Stopped - checking whether its Vault-side identity (Safe/LOB) still exists before assuming it's just idle..." -ForegroundColor Yellow
 }
 
 $pvwaHdr = Connect-PVWALocal
@@ -284,7 +293,7 @@ Write-Host "  [OK]" -ForegroundColor Green
 # ================================================================
 # Phase 5: run the installer non-interactively via real stdin redirection
 # ================================================================
-Write-Host "`n[Phase 5] Running Synchronizer installer (non-interactive - answer sequence confirmed against a real transcript 2026-08-07, but the underlying Process-based stdin injection itself has hung twice with zero output even with a correct sequence, cause not yet root-caused - watch closely, manual run remains the reliable fallback)..." -ForegroundColor Yellow
+Write-Host "`n[Phase 5] Running Synchronizer installer (non-interactive - answer sequence confirmed against a real transcript 2026-08-07; a real stdout/stderr deadlock that used to hang this step with zero output was found and fixed here - see comment below)..." -ForegroundColor Yellow
 
 # Exact prompt order confirmed against a REAL installer transcript
 # (2026-08-07, this lab, both a clean-ish run and a retry-over-existing-Safe
@@ -339,6 +348,16 @@ $answersScript += "`n) | Set-Content -Path '$remoteAnswersFile' -Encoding ASCII"
 Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass -ScriptBlock $answersScript | Out-Null
 
 $runScript = @"
+# Real bug found live: reading stdout via ReadToEnd() BEFORE WaitForExit(),
+# with stderr also redirected but never read concurrently, is the classic
+# .NET Process I/O deadlock - if the child writes enough to stderr while
+# ReadToEnd() blocks on stdout, stderr's OS pipe buffer fills, the child
+# blocks trying to write to it, and neither stream ever closes. This is what
+# "hung twice with zero output" (see this phase's Write-Host above) actually
+# was - confirmed live: the installer process sat at ~0% CPU indefinitely
+# with the answers file already written and waiting, matching a blocked
+# write rather than a slow/working process. Fixed by reading both streams
+# asynchronously via events instead of sequential blocking reads.
 `$psi = New-Object System.Diagnostics.ProcessStartInfo
 `$psi.FileName = "powershell.exe"
 `$psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "$SynchronizerInstallerPath"'
@@ -346,15 +365,28 @@ $runScript = @"
 `$psi.RedirectStandardOutput = `$true
 `$psi.RedirectStandardError = `$true
 `$psi.UseShellExecute = `$false
-`$proc = [System.Diagnostics.Process]::Start(`$psi)
+`$proc = New-Object System.Diagnostics.Process
+`$proc.StartInfo = `$psi
+`$stdoutBuilder = New-Object System.Text.StringBuilder
+`$stderrBuilder = New-Object System.Text.StringBuilder
+`$stdoutEvent = Register-ObjectEvent -InputObject `$proc -EventName OutputDataReceived -Action {
+    if (`$EventArgs.Data -ne `$null) { [void]`$Event.MessageData.AppendLine(`$EventArgs.Data) }
+} -MessageData `$stdoutBuilder
+`$stderrEvent = Register-ObjectEvent -InputObject `$proc -EventName ErrorDataReceived -Action {
+    if (`$EventArgs.Data -ne `$null) { [void]`$Event.MessageData.AppendLine(`$EventArgs.Data) }
+} -MessageData `$stderrBuilder
+`$proc.Start() | Out-Null
+`$proc.BeginOutputReadLine()
+`$proc.BeginErrorReadLine()
 `$answerLines = Get-Content '$remoteAnswersFile'
-foreach (`$line in `$answerLines) { `$proc.StandardInput.WriteLine(`$line) }
+foreach (`$line in `$answerLines) { `$proc.StandardInput.WriteLine(`$line); Start-Sleep -Milliseconds 300 }
 `$proc.StandardInput.Close()
-`$stdout = `$proc.StandardOutput.ReadToEnd()
-`$stderr = `$proc.StandardError.ReadToEnd()
 `$proc.WaitForExit(600000) | Out-Null
-`$stdout | Set-Content -Path '$remoteOutFile'
-`$stderr | Set-Content -Path '$remoteErrFile'
+Start-Sleep -Milliseconds 500
+Unregister-Event -SourceIdentifier `$stdoutEvent.Name -ErrorAction SilentlyContinue
+Unregister-Event -SourceIdentifier `$stderrEvent.Name -ErrorAction SilentlyContinue
+`$stdoutBuilder.ToString() | Set-Content -Path '$remoteOutFile'
+`$stderrBuilder.ToString() | Set-Content -Path '$remoteErrFile'
 exit `$proc.ExitCode
 "@
 $installResult = Invoke-LabVMPowerShell -VMXPath $compVMX -GuestUser $guestUser -GuestPassword $guestPass -NoThrow -ScriptBlock $runScript
