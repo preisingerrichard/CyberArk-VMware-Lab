@@ -8,7 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ### Changed
 - `Deploy-Optional.ps1`: **ReconcileAccount** and **DiscoveryAccount** store their accounts in a separate safe `Lab-ServiceAccounts` instead of `VaultInternal`. The safe is created if missing and managed by the logged-on CPM. In `VaultInternal` (no managing CPM) the CPM could not use the reconcile account, so every reconcile failed. `VaultInternal` stays reserved for the LDAP bind account. Existing labs: rerun both features, then remove the old copies from `VaultInternal`.
 
-## [1.7.0] - 2026-09-24
+## [1.7.0] - 2026-11-22
 
 ### Added
 - **Vault LDAP integration, end to end.** Two numbered scripts that take a lab from zero to working AD logon to PVWA, both run by `Deploy-Lab.ps1 -Steps Full` and exposed as `Deploy-Optional.ps1` features:
@@ -117,6 +117,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 - Master orchestrator `Deploy-Lab.ps1` with per-step execution.
 - Teardown script and helper modules.
 
+[1.7.0]: #170---2026-11-22
 [1.6.0]: #160---2026-07-30
 [1.5.0]: #150---2026-07-30
 [1.4.0]: #140---2026-07-04
