@@ -179,6 +179,27 @@ try {
     }
 }
 
+# ================================================================
+# Step 4: NTP - make DC01 a reliable time source
+# ================================================================
+Write-Host "`n[Step 4] Configuring NTP..." -ForegroundColor Yellow
+
+$ntpConfig = @"
+# DC01 already distributes time to the domain (PDC emulator), but without an
+# external peer it free-runs off the VM's own clock, so lab clocks drift
+# (wrong event timestamps on PTA, Kerberos/TLS failures). Sync it from an
+# external source and mark it reliable.
+w32tm /config /manualpeerlist:"pool.ntp.org,0x8 time.windows.com,0x8" /syncfromflags:manual /reliable:yes /update
+Restart-Service w32time
+Write-Host "NTP configured (pool.ntp.org, time.windows.com)"
+
+New-NetFirewallRule -DisplayName "NTP (UDP 123)" -Direction Inbound -Protocol UDP -LocalPort 123 -Action Allow -ErrorAction SilentlyContinue | Out-Null
+"@
+
+Invoke-LabVMPowerShell -VMXPath $dcVMX -ScriptBlock $ntpConfig `
+    -GuestUser $domainUser -GuestPassword $domainPass
+Write-Host "  [OK] NTP configured" -ForegroundColor Green
+
 # Snapshot
 Stop-LabVM -VMXPath $dcVMX
 Start-Sleep -Seconds 15
