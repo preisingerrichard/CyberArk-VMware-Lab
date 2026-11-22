@@ -9,6 +9,8 @@ ISO/
 
 # ── Claude Code project files ────────────────────────────────────
 .claude/
+# Personal Claude context (lab state, private areas) - CLAUDE.md itself is public
+CLAUDE.local.md
 
 # ── Runtime state (generated during deployment) ──────────────────
 Config/DeployedVMs.xml
@@ -33,8 +35,17 @@ Logs/
 # ── Temp files ───────────────────────────────────────────────────
 *.tmp
 
+# ── Python bytecode cache (Helpers\PTAInstallerWizard.py) ───────
+__pycache__/
+*.pyc
+
 # ── Private client-engagement notes (never for GitHub) ────────────
 CLIENT-*.md
+
+# ── Playwright E2E demo for the blog article (never for GitHub) ───
+# Local-only test project run against this lab's PVWA; the article
+# is the published artefact, not this folder.
+PlaywrightDemo/
 
 # ── App-specific Conjur policy test content (never for GitHub) ────
 # Repo's own contribution stops at loading the root policy
