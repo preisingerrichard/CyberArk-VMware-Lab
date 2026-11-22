@@ -7,24 +7,24 @@
     PVWA REST) - nothing is edited on the appliances, so it is redeploy/upgrade
     safe. Every feature is idempotent.
 
-    Features:
-      VaultADObjects    Create the AD OU + Vault role groups (Admins/Users/
-                        Auditors/SafeManagers) and populate them with users.
-      LDAPBindUser      Create the least-privilege AD bind user (List Contents)
-                        and store it as an account in PVWA (for Vault/PTA LDAP).
-      ReconcileAccount  (planned) Create a reconcile account in AD + PVWA.
+    Features (see -ListFeatures for all), e.g.:
+      VaultADObjects    LDAP bind user + Vault role groups/users in AD
+                        (dispatches to Scripts\16-CreateVaultADObjects.ps1)
+      VaultLDAP         Vault LDAP directory + group mappings via PVWA
+                        (dispatches to Scripts\17-ConfigureVaultLDAP.ps1)
+      ReconcileAccount  Create a reconcile account in AD + PVWA.
 
     Usage:
       .\Deploy-Optional.ps1                                  # interactive menu
       .\Deploy-Optional.ps1 -Feature VaultADObjects
-      .\Deploy-Optional.ps1 -Feature VaultADObjects,LDAPBindUser -GrantPTAAppUserRead
+      .\Deploy-Optional.ps1 -Feature VaultADObjects,VaultLDAP -GrantPTAAppUserRead
       .\Deploy-Optional.ps1 -ListFeatures
 .NOTES
     Run after the domain controller (and, for PVWA steps, PVWA) are up.
 #>
 
 param(
-    [ValidateSet("VaultADObjects", "LDAPBindUser", "ReconcileAccount", "DiscoveryAccount",
+    [ValidateSet("VaultADObjects", "VaultLDAP", "ReconcileAccount", "DiscoveryAccount",
                  "PTACertificates", "VaultPTASyslog", "ConjurNodes", "LoadBalancer", "ConjurSystemFolders",
                  "ConjurAppliance", "ConjurDNS", "ConjurInstallLeader", "ConjurImportCertificates",
                  "ConjurEncryptKeys", "ConjurInstallStandby", "ConjurInstallFollower",
@@ -33,28 +33,36 @@ param(
 
     [string]$ConfigPath = "$PSScriptRoot\Config\LabConfig.psd1",
 
-    # VaultADObjects
+    # VaultADObjects (dispatch to Scripts\16-CreateVaultADObjects.ps1)
     [string]$OUName        = "CyberArk",
     [ValidateRange(1,100)][int]$UsersPerGroup = 10,
     [string]$UserPassword  = "Cyberark1!",
+    [switch]$ResetBindPassword,
 
-    # LDAPBindUser
+    # VaultADObjects + VaultLDAP (dispatch to Scripts\17-ConfigureVaultLDAP.ps1)
     [string]$BindUser      = "svc-cybr-ldap",
     [string]$BindPassword  = "Cyberark1!",
     [string]$SafeName      = "VaultInternal",
     [string]$AccountName   = "cyberark.lab.pass",
     [switch]$GrantPTAAppUserRead,
 
+    # VaultLDAP + ReconcileAccount + DiscoveryAccount: shared Windows domain service-account
+    # platform, duplicated from the Marketplace WinDomain platform (Helpers\PVWAHelper.psm1)
+    [string]$SvcAccPlatformId = "Win-Dom-SvcAcc",
+    [string]$WinDomainZipPath,                   # only if WinDomain isn't in the Vault yet
+
+    # ReconcileAccount + DiscoveryAccount: their own CPM-managed safe (created if missing).
+    # VaultInternal is only for the LDAP bind account, which the LDAP integration keeps there.
     # ReconcileAccount
     [string]$ReconcileUser        = "svc-cybr-reconcile",
     [string]$ReconcilePassword    = "Cyberark1!",
-    [string]$ReconcileSafe        = "VaultInternal",
+    [string]$ReconcileSafe        = "Lab-ServiceAccounts",
     [string]$ReconcileAccountName = "cyberark.lab.reconcile",
 
     # DiscoveryAccount
     [string]$DiscoveryUser        = "svc-discovery",
-    [string]$DiscoveryPassword    = "Cyberark1!",
-    [string]$DiscoverySafe        = "VaultInternal",
+    [string]$DiscoveryPassword    = "Cyberark!Local2024",
+    [string]$DiscoverySafe        = "Lab-ServiceAccounts",
     [string]$DiscoveryAccountName = "cyberark.lab.discovery",
     [string]$DiscoveryDisplayName = "CyberArk Discovery Scanner",
 
@@ -120,6 +128,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module "$PSScriptRoot\Helpers\PVWAHelper.psm1" -Force
 $Config = Import-PowerShellDataFile $ConfigPath
 $CA     = Import-PowerShellDataFile "$PSScriptRoot\Config\CyberArkConfig.psd1"
 
@@ -134,8 +143,8 @@ $pvwaBase = "https://$($pvwaVM.IPAddress)/PasswordVault"
 
 # ---- feature catalogue (add new options here) --------------------
 $catalogue = [ordered]@{
-    VaultADObjects   = "Create AD OU + Vault role groups + users"
-    LDAPBindUser     = "Create AD bind user (List Contents) + store in PVWA"
+    VaultADObjects   = "Create AD bind user + Vault role groups + users (OU=CyberArk)"
+    VaultLDAP        = "Configure Vault LDAP directory (389) + group mappings via PVWA"
     ReconcileAccount = "Create a reconcile account (Reset Password) in AD + PVWA"
     DiscoveryAccount = "Create the accounts-discovery scan account in AD + PVWA"
     PTACertificates  = "Issue + install PTA CA certificates from DC01 (DR-ready)"
@@ -188,86 +197,68 @@ function Disconnect-PVWA {
 }
 
 # ================================================================
-# Feature: VaultADObjects
+# Feature: VaultADObjects  (dispatch to Scripts\16-CreateVaultADObjects.ps1)
+#   LDAP bind user (List Contents) + Vault role groups/users in OU=CyberArk.
 # ================================================================
 function Invoke-VaultADObjects {
-    Write-Host "`n### VaultADObjects: OU + role groups + users ###" -ForegroundColor Cyan
-    $roles = @(
-        @{ Group="Lab-Vault-Admins";       Prefix="vault_admin"   },
-        @{ Group="Lab-Vault-Users";        Prefix="vault_user"    },
-        @{ Group="Lab-Vault-Auditors";     Prefix="vault_auditor" },
-        @{ Group="Lab-Vault-SafeManagers"; Prefix="vault_safemgr" }
-    )
-    $out = Invoke-DC -ArgumentList $domain, $OUName, $roles, $UsersPerGroup, $UserPassword -Script {
-        param($domain, $OUName, $roles, $count, $password)
-        Import-Module ActiveDirectory -ErrorAction Stop
-        $log = New-Object System.Collections.Generic.List[string]
-        $baseDN = ($domain.Split('.') | ForEach-Object { "DC=$_" }) -join ','
-        $ouDN   = "OU=$OUName,$baseDN"
-        $secPw  = ConvertTo-SecureString $password -AsPlainText -Force
-        if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$OUName'" -SearchBase $baseDN -ErrorAction SilentlyContinue)) {
-            New-ADOrganizationalUnit -Name $OUName -Path $baseDN -ProtectedFromAccidentalDeletion $false; $log.Add("OU_CREATED:$ouDN")
-        } else { $log.Add("OU_FOUND:$ouDN") }
-        foreach ($r in $roles) {
-            $grp=$r.Group; $prefix=$r.Prefix
-            $g = Get-ADGroup -Filter "Name -eq '$grp'" -ErrorAction SilentlyContinue
-            if (-not $g) { New-ADGroup -Name $grp -SamAccountName ($grp -replace '[^A-Za-z0-9]','') -GroupCategory Security -GroupScope Global -Path $ouDN; $g = Get-ADGroup -Filter "Name -eq '$grp'"; $log.Add("GROUP_CREATED:$grp") }
-            else { $log.Add("GROUP_FOUND:$grp") }
-            $c=0;$e=0;$a=0
-            for ($i=1;$i -le $count;$i++) {
-                $sam="$prefix$i"
-                if (-not (Get-ADUser -Filter "SamAccountName -eq '$sam'" -ErrorAction SilentlyContinue)) {
-                    New-ADUser -Name $sam -SamAccountName $sam -UserPrincipalName "$sam@$domain" -Path $ouDN -AccountPassword $secPw -Enabled $true -PasswordNeverExpires:$true -ChangePasswordAtLogon:$false; $c++
-                } else { $e++ }
-                if (-not (Get-ADGroupMember -Identity $g.DistinguishedName -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $sam })) { Add-ADGroupMember -Identity $g.DistinguishedName -Members $sam; $a++ }
-            }
-            $log.Add("$grp : created=$c existed=$e added=$a")
-        }
-        $log
-    }
-    $out | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
-    Write-Host "  [OK] VaultADObjects done" -ForegroundColor Green
+    Write-Host "`n### VaultADObjects ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\16-CreateVaultADObjects.ps1" -ConfigPath $ConfigPath -OUName $OUName -UsersPerGroup $UsersPerGroup `
+        -UserPassword $UserPassword -BindUser $BindUser -BindPassword $BindPassword -ResetBindPassword:$ResetBindPassword
 }
 
 # ================================================================
-# Feature: LDAPBindUser
+# Feature: VaultLDAP  (dispatch to Scripts\17-ConfigureVaultLDAP.ps1)
+#   Vault firewall rule + LDAP directory + group mappings (PVWA REST).
 # ================================================================
-function Invoke-LDAPBindUser {
-    Write-Host "`n### LDAPBindUser: AD bind user + PVWA account ###" -ForegroundColor Cyan
-    $upn = "$BindUser@$domain"
-    $ad = Invoke-DC -ArgumentList $BindUser, $upn, $BindPassword, $baseDN, $netbios -Script {
-        param($sam, $upn, $password, $baseDN, $netbios)
-        Import-Module ActiveDirectory -ErrorAction Stop
-        $log = New-Object System.Collections.Generic.List[string]
-        $secPw = ConvertTo-SecureString $password -AsPlainText -Force
-        $u = Get-ADUser -Filter "SamAccountName -eq '$sam'" -ErrorAction SilentlyContinue
-        if (-not $u) {
-            New-ADUser -Name $sam -SamAccountName $sam -UserPrincipalName $upn -Path "CN=Users,$baseDN" -AccountPassword $secPw -Enabled $true -PasswordNeverExpires:$true -ChangePasswordAtLogon:$false -Description "CyberArk Vault/PTA LDAP bind account (least privilege)"
-            $log.Add("USER_CREATED:$upn")
-        } else { Set-ADUser -Identity $u -PasswordNeverExpires $true; $log.Add("USER_EXISTS:$upn") }
-        $r = & dsacls $baseDN /I:T /G "$netbios\${sam}:LC" 2>&1
-        $log.Add($(if ($LASTEXITCODE -eq 0) { "LIST_CONTENTS_GRANTED" } else { "LIST_CONTENTS_WARN:$($r | Select-Object -Last 1)" }))
-        $log
-    }
-    $ad | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+function Invoke-VaultLDAP {
+    Write-Host "`n### VaultLDAP ###" -ForegroundColor Cyan
+    & "$PSScriptRoot\Scripts\17-ConfigureVaultLDAP.ps1" -ConfigPath $ConfigPath -BindUser $BindUser -BindPassword $BindPassword `
+        -SafeName $SafeName -AccountName $AccountName -TestPassword $UserPassword -GrantPTAAppUserRead:$GrantPTAAppUserRead `
+        -PlatformId $SvcAccPlatformId -WinDomainZipPath $WinDomainZipPath
+}
 
+function Add-LabServiceAccount {
+    # Shared PVWA half of ReconcileAccount/DiscoveryAccount: ensure the service-account
+    # platform, then create the account on it (AD password reset to match on creation only)
+    # or move an existing one onto it.
+    param([string]$Name, [string]$UserName, [string]$Upn, [string]$Safe, [string]$Password)
     Connect-PVWA
     try {
-        $srch = (Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Accounts?search=$BindUser&searchIn=$SafeName" -Headers $pvwaHdr).Content | ConvertFrom-Json
-        $found = $srch.value | Where-Object { $_.userName -eq $upn -or $_.userName -eq $BindUser } | Select-Object -First 1
-        if ($found) { Write-Host "  [OK] PVWA account exists: id=$($found.id) addr=$($found.address)" -ForegroundColor Green }
-        else {
-            $body = @{ name=$AccountName; address=$domain; userName=$upn; platformId="WinDomain"; safeName=$SafeName; secretType="password"; secret=$BindPassword; platformAccountProperties=@{} } | ConvertTo-Json
-            $id = ((Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Accounts" -Method POST -Body $body -ContentType "application/json" -Headers $pvwaHdr).Content | ConvertFrom-Json).id
-            Write-Host "  [OK] PVWA account created: id=$id (address=$domain)" -ForegroundColor Green
+        $null = Initialize-LabServiceAccountPlatform -PvwaBase $pvwaBase -Headers $script:pvwaHdr -Iwr $script:iwr `
+                    -PlatformId $SvcAccPlatformId -SourceZipPath $WinDomainZipPath
+
+        # The safe, managed by the CPM that is actually logged on (a stale "PasswordManager" user
+        # left by a CPM reinstall never picks up tasks), so the CPM can use the reconcile account
+        $safeExists = $true
+        try { $null = Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Safes/$Safe" -Headers $pvwaHdr } catch { $safeExists = $false }
+        if (-not $safeExists) {
+            $cpm = ((Invoke-WebRequest @iwr -Uri "$pvwaBase/api/ComponentsMonitoringDetails/CPM" -Headers $pvwaHdr).Content | ConvertFrom-Json).ComponentsDetails |
+                Where-Object { $_.IsLoggedOn } | Sort-Object LastLogonDate -Descending | Select-Object -First 1 -ExpandProperty ComponentUserName
+            if (-not $cpm) { throw "No CPM is logged on to the Vault - start the CyberArk Password Manager service, then rerun" }
+            $safeBody = @{ safeName = $Safe; managingCPM = $cpm; numberOfVersionsRetention = 5
+                           description = "Lab service accounts (reconcile, discovery)" } | ConvertTo-Json
+            $null = Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Safes" -Method POST -Body $safeBody -ContentType "application/json" -Headers $pvwaHdr
+            Write-Host "  [OK] Safe $Safe created (managing CPM $cpm)" -ForegroundColor Green
         }
-        if ($GrantPTAAppUserRead) {
-            $mem = @{ memberName="PTAAppUser"; searchIn="Vault"; permissions=@{ useAccounts=$true; retrieveAccounts=$true; listAccounts=$true } } | ConvertTo-Json
-            try { Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Safes/$SafeName/Members" -Method POST -Body $mem -ContentType "application/json" -Headers $pvwaHdr | Out-Null; Write-Host "  [OK] PTAAppUser granted read on $SafeName" -ForegroundColor Green }
-            catch { if (($_.ErrorDetails.Message) -match 'already') { Write-Host "  [OK] PTAAppUser already member" -ForegroundColor Green } else { Write-Warning $_.ErrorDetails.Message } }
+
+        $srch  =(Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Accounts?search=$UserName&filter=safeName%20eq%20$Safe" -Headers $pvwaHdr).Content | ConvertFrom-Json
+        $found = $srch.value | Where-Object { $_.userName -eq $Upn -or $_.userName -eq $UserName } | Select-Object -First 1
+        if ($found) {
+            Write-Host "  [OK] PVWA account exists: id=$($found.id) addr=$($found.address)" -ForegroundColor Green
+            Set-LabAccountPlatform -PvwaBase $pvwaBase -Headers $script:pvwaHdr -Iwr $script:iwr -Account $found -PlatformId $SvcAccPlatformId
+        } else {
+            # First time into PVWA: set the AD password to the one being stored, so both start in sync even if
+            # the AD account pre-existed with another password. Later runs never reset (CPM may have rotated it).
+            Invoke-DC -ArgumentList $UserName, $Password -Script {
+                param($sam, $password)
+                Set-ADAccountPassword -Identity $sam -Reset -NewPassword (ConvertTo-SecureString $password -AsPlainText -Force)
+            }
+            Write-Host "  [OK] AD password of $UserName set to the stored value" -ForegroundColor Green
+            $body = @{ name=$Name; address=$domain; userName=$Upn; platformId=$SvcAccPlatformId; safeName=$Safe; secretType="password"; secret=$Password; platformAccountProperties=@{} } | ConvertTo-Json
+            $id = ((Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Accounts" -Method POST -Body $body -ContentType "application/json" -Headers $pvwaHdr).Content | ConvertFrom-Json).id
+            Write-Host "  [OK] PVWA account created: id=$id (address=$domain, platform=$SvcAccPlatformId)" -ForegroundColor Green
         }
     } finally { Disconnect-PVWA }
-    Write-Host "  [OK] LDAPBindUser done. Configure the external directory / group mapping in PrivateArk / PVWA." -ForegroundColor Green
 }
 
 # ================================================================
@@ -301,17 +292,7 @@ function Invoke-ReconcileAccount {
     }
     $ad | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
 
-    Connect-PVWA
-    try {
-        $srch = (Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Accounts?search=$ReconcileUser&searchIn=$ReconcileSafe" -Headers $pvwaHdr).Content | ConvertFrom-Json
-        $found = $srch.value | Where-Object { $_.userName -eq $upn -or $_.userName -eq $ReconcileUser } | Select-Object -First 1
-        if ($found) { Write-Host "  [OK] PVWA account exists: id=$($found.id) addr=$($found.address)" -ForegroundColor Green }
-        else {
-            $body = @{ name=$ReconcileAccountName; address=$domain; userName=$upn; platformId="WinDomain"; safeName=$ReconcileSafe; secretType="password"; secret=$ReconcilePassword; platformAccountProperties=@{} } | ConvertTo-Json
-            $id = ((Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Accounts" -Method POST -Body $body -ContentType "application/json" -Headers $pvwaHdr).Content | ConvertFrom-Json).id
-            Write-Host "  [OK] PVWA account created: id=$id (address=$domain)" -ForegroundColor Green
-        }
-    } finally { Disconnect-PVWA }
+    Add-LabServiceAccount -Name $ReconcileAccountName -UserName $ReconcileUser -Upn $upn -Safe $ReconcileSafe -Password $ReconcilePassword
     Write-Host "  [OK] ReconcileAccount ready. Set it as the reconcile account for the target platform/accounts in PVWA." -ForegroundColor Green
 }
 
@@ -341,36 +322,26 @@ function Invoke-DiscoveryAccount {
     }
     $ad | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
 
-    Connect-PVWA
-    try {
-        $srch = (Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Accounts?search=$DiscoveryUser&searchIn=$DiscoverySafe" -Headers $pvwaHdr).Content | ConvertFrom-Json
-        $found = $srch.value | Where-Object { $_.userName -eq $upn -or $_.userName -eq $DiscoveryUser } | Select-Object -First 1
-        if ($found) { Write-Host "  [OK] PVWA account exists: id=$($found.id) addr=$($found.address)" -ForegroundColor Green }
-        else {
-            $body = @{ name=$DiscoveryAccountName; address=$domain; userName=$upn; platformId="WinDomain"; safeName=$DiscoverySafe; secretType="password"; secret=$DiscoveryPassword; platformAccountProperties=@{} } | ConvertTo-Json
-            $id = ((Invoke-WebRequest @iwr -Uri "$pvwaBase/api/Accounts" -Method POST -Body $body -ContentType "application/json" -Headers $pvwaHdr).Content | ConvertFrom-Json).id
-            Write-Host "  [OK] PVWA account created: id=$id (address=$domain)" -ForegroundColor Green
-        }
-    } finally { Disconnect-PVWA }
+    Add-LabServiceAccount -Name $DiscoveryAccountName -UserName $DiscoveryUser -Upn $upn -Safe $DiscoverySafe -Password $DiscoveryPassword
     Write-Host "  [OK] DiscoveryAccount ready. Reference it in the Accounts Discovery scan definition in PVWA; ensure it has scan rights on the targets." -ForegroundColor Green
 }
 
 # ================================================================
-# Feature: PTACertificates  (dispatch to Scripts\Configure-PTACertificates.ps1)
+# Feature: PTACertificates  (dispatch to Scripts\14-ConfigurePTACertificates.ps1)
 #   Issues + installs CA-signed PTA certificates from the DC01 Enterprise CA.
 # ================================================================
 function Invoke-PTACertificates {
     Write-Host "`n### PTACertificates ###" -ForegroundColor Cyan
-    & "$PSScriptRoot\Scripts\Configure-PTACertificates.ps1" -PrimaryName $PTAPrimaryName -SecondaryName $PTASecondaryName
+    & "$PSScriptRoot\Scripts\14-ConfigurePTACertificates.ps1" -PrimaryName $PTAPrimaryName -SecondaryName $PTASecondaryName
 }
 
 # ================================================================
-# Feature: VaultPTASyslog  (dispatch to Scripts\Configure-VaultSyslogToPTA.ps1)
+# Feature: VaultPTASyslog  (dispatch to Scripts\15-ConfigureVaultSyslogToPTA.ps1)
 #   Configures Vault -> PTA syslog forwarding for session monitoring.
 # ================================================================
 function Invoke-VaultPTASyslog {
     Write-Host "`n### VaultPTASyslog ###" -ForegroundColor Cyan
-    & "$PSScriptRoot\Scripts\Configure-VaultSyslogToPTA.ps1" -PrimaryPTAName $PTAPrimaryName -SyslogPort $SyslogPort -SyslogProtocol $SyslogProtocol
+    & "$PSScriptRoot\Scripts\15-ConfigureVaultSyslogToPTA.ps1" -PrimaryPTAName $PTAPrimaryName -SyslogPort $SyslogPort -SyslogProtocol $SyslogProtocol
 }
 
 # ================================================================
@@ -547,7 +518,7 @@ Write-Host ("=" * 62) -ForegroundColor Cyan
 foreach ($f in $Feature) {
     switch ($f) {
         "VaultADObjects"   { Invoke-VaultADObjects }
-        "LDAPBindUser"     { Invoke-LDAPBindUser }
+        "VaultLDAP"        { Invoke-VaultLDAP }
         "ReconcileAccount" { Invoke-ReconcileAccount }
         "DiscoveryAccount" { Invoke-DiscoveryAccount }
         "PTACertificates"  { Invoke-PTACertificates }

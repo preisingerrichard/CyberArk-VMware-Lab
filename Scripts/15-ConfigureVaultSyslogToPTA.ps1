@@ -27,8 +27,8 @@
     (auditType_VAULT_LOGON increments; PVWA System Health shows the events).
 
     Usage:
-      .\Configure-VaultSyslogToPTA.ps1
-      .\Configure-VaultSyslogToPTA.ps1 -PrimaryPTAName PTA01 -SyslogPort 11514 -SyslogProtocol TCP
+      .\15-ConfigureVaultSyslogToPTA.ps1
+      .\15-ConfigureVaultSyslogToPTA.ps1 -PrimaryPTAName PTA01 -SyslogPort 11514 -SyslogProtocol TCP
 .NOTES
     Restarts PTA 'appmgr' and the 'PrivateArk Server' (Vault) service - brief downtime.
     Timestamped backups of both systemparm.properties and dbparm.ini are made first.
@@ -98,6 +98,9 @@ if grep -q '^enable_client_verification=' "`$f"; then
 else
   printf 'enable_client_verification=false\n' >> "`$f"
 fi
+# mv/sed -i replace the file as root: put back PTA's owner (DR file-sync copies it as-is to the secondary)
+chown ptaapp:pta_server "`$f"
+restorecon "`$f" 2>/dev/null || true
 echo "SYSLOG_INBOUND: `$(grep '^syslog_inbound=' "`$f")"
 echo "CLIENT_VERIF: `$(grep '^enable_client_verification=' "`$f")"
 systemctl restart appmgr

@@ -6,7 +6,7 @@
 .PARAMETER Steps
     Specify which steps to run. Default: All
 .EXAMPLE
-    .\Deploy-Lab.ps1 -Steps Full          # Everything: base lab + PTA + PSMP
+    .\Deploy-Lab.ps1 -Steps Full          # Everything: base lab + LDAP + PTA (+certs, syslog) + PSMP
     .\Deploy-Lab.ps1                      # Base lab only (no PTA/PSMP)
     .\Deploy-Lab.ps1 -Steps Prerequisites,BaseVM,DeployVMs
     .\Deploy-Lab.ps1 -Help                # List all steps and examples
@@ -17,7 +17,8 @@ param(
     [ValidateSet(
         "All", "Full", "Prerequisites", "BaseVM", "DeployVMs", "DomainController",
         "DomainJoin", "VaultInstall", "PVWAInstall", "CPMInstall",
-        "PSMInstall", "CreatePTAVM", "PTAInstall", "CreatePSMPVM", "PSMPInstall"
+        "PSMInstall", "VaultADObjects", "VaultLDAP", "CreatePTAVM", "PTAInstall",
+        "PTACertificates", "VaultPTASyslog", "CreatePSMPVM", "PSMPInstall"
     )]
     [string[]]$Steps = @("All"),
 
@@ -40,7 +41,7 @@ if ($Help) {
     Write-Host ""
     $stepInfo = [ordered]@{
         "All"              = "Base lab: Prerequisites through PSMInstall (no PTA/PSMP)"
-        "Full"             = "Everything: base lab + PTA + PSMP in one command"
+        "Full"             = "Everything: base lab + LDAP integration + PTA + PSMP in one command"
         "Prerequisites"    = "Verify host requirements (vmrun.exe, ISOs, installer media)"
         "BaseVM"           = "Create Windows Server 2022 template VM (sysprepped, snapshotted)"
         "DeployVMs"        = "Clone DC01, VAULT01, COMP01 from template; set IPs, hostnames, WinRM"
@@ -50,8 +51,12 @@ if ($Help) {
         "PVWAInstall"      = "Install PVWA on COMP01 (IIS, installer, register with Vault)"
         "CPMInstall"       = "Install CPM on COMP01 (register with Vault)"
         "PSMInstall"       = "Install PSM on COMP01 (register with Vault)"
+        "VaultADObjects"   = "DC01: LDAP bind user + Vault role groups/users in OU=CyberArk"
+        "VaultLDAP"        = "Vault LDAP directory (389) + group mappings via PVWA"
         "CreatePTAVM"      = "Create PTA01 Rocky Linux 9 VM via kickstart"
         "PTAInstall"       = "Install and configure PTA on PTA01"
+        "PTACertificates"  = "Issue + install DC01 CA-signed certificates on PTA01"
+        "VaultPTASyslog"   = "Vault -> PTA syslog forwarding (session monitoring)"
         "CreatePSMPVM"     = "Create PSMP01 Rocky Linux 9 VM via kickstart"
         "PSMPInstall"      = "Install and configure PSMP on PSMP01"
     }
@@ -67,6 +72,7 @@ if ($Help) {
     Write-Host "  .\Deploy-Lab.ps1                                    # Base lab only (no PTA/PSMP)"
     Write-Host "  .\Deploy-Lab.ps1 -Steps Prerequisites               # Pre-flight check only"
     Write-Host "  .\Deploy-Lab.ps1 -Steps VaultInstall,PVWAInstall    # Specific steps only"
+    Write-Host "  .\Deploy-Lab.ps1 -Steps VaultADObjects,VaultLDAP    # Add LDAP integration to existing lab"
     Write-Host "  .\Deploy-Lab.ps1 -Steps CreatePTAVM,PTAInstall      # Add PTA to existing lab"
     Write-Host "  .\Deploy-Lab.ps1 -Steps PTAInstall                  # Re-run PTA install only"
     Write-Host "  .\Deploy-Lab.ps1 -Steps CreatePSMPVM,PSMPInstall    # Add PSMP to existing lab"
@@ -239,7 +245,19 @@ if ($allSteps -or $Steps -contains "PSMInstall") {
         -Description "Installing CyberArk PSM"
 }
 
-# PTA and PSMP steps run when explicitly requested or when -Steps Full is used
+# LDAP integration, PTA and PSMP steps run when explicitly requested or when -Steps Full is used
+if ($Steps -contains "VaultADObjects" -or $fullDeploy) {
+    Invoke-LabStep -StepName "VaultADObjects" `
+        -ScriptPath "$scriptsDir\16-CreateVaultADObjects.ps1" `
+        -Description "Creating Vault AD objects (bind user, role groups, users)"
+}
+
+if ($Steps -contains "VaultLDAP" -or $fullDeploy) {
+    Invoke-LabStep -StepName "VaultLDAP" `
+        -ScriptPath "$scriptsDir\17-ConfigureVaultLDAP.ps1" `
+        -Description "Configuring Vault LDAP directory + mappings"
+}
+
 if ($Steps -contains "CreatePTAVM" -or $fullDeploy) {
     Invoke-LabStep -StepName "CreatePTAVM" `
         -ScriptPath "$scriptsDir\10-CreatePTAVM.ps1" `
@@ -250,6 +268,18 @@ if ($Steps -contains "PTAInstall" -or $fullDeploy) {
     Invoke-LabStep -StepName "PTAInstall" `
         -ScriptPath "$scriptsDir\11-InstallPTA-Primary.ps1" `
         -Description "Installing CyberArk PTA Primary (Rocky Linux)"
+}
+
+if ($Steps -contains "PTACertificates" -or $fullDeploy) {
+    Invoke-LabStep -StepName "PTACertificates" `
+        -ScriptPath "$scriptsDir\14-ConfigurePTACertificates.ps1" `
+        -Description "Installing DC01 CA-signed certificates on PTA"
+}
+
+if ($Steps -contains "VaultPTASyslog" -or $fullDeploy) {
+    Invoke-LabStep -StepName "VaultPTASyslog" `
+        -ScriptPath "$scriptsDir\15-ConfigureVaultSyslogToPTA.ps1" `
+        -Description "Configuring Vault -> PTA syslog forwarding"
 }
 
 if ($Steps -contains "CreatePSMPVM" -or $fullDeploy) {

@@ -3,7 +3,6 @@
     Configure SSL certificates on PTA Primary and/or Secondary servers.
 .DESCRIPTION
     Full certificate automation:
-      0  Store Vault admin credential in PVWA safe (PTA-Automation)
       1  Configure DC01 CA for SAN support (EDITF_ATTRIBUTESUBJECTALTNAME2)
       2  Per PTA server:
            2a  Fix system hostname (PTA02 workaround for kickstart bug)
@@ -12,19 +11,18 @@
            2d  Submit CSR to DC01 CA via certreq, download signed cert
            2e  Export root CA cert from DC01
            2f  SCP cert + root CA back to PTA
-           2g  Retrieve Vault admin password from PVWA safe
+           2g  Vault admin password from CyberArkConfig.psd1
            2h  Install cert via stdin pipe to sslCertificateInstallationUtil.sh
 
     Usage:
       # Primary only:
-      .\Configure-PTACertificates.ps1 -PrimaryName PTA01
+      .\14-ConfigurePTACertificates.ps1 -PrimaryName PTA01
 
       # Primary + Secondary (DR):
-      .\Configure-PTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02
+      .\14-ConfigurePTACertificates.ps1 -PrimaryName PTA01 -SecondaryName PTA02
 
     Prerequisites:
     - PTA servers must be installed (11-InstallPTA-Primary.ps1 / 11-InstallPTA-Secondary.ps1)
-    - PVWA must be running and accessible
     - DC01 must have Active Directory Certificate Services role installed
 #>
 
@@ -63,12 +61,8 @@ $domain        = $Config.Domain.Name
 $sharedPrefix  = $CAConfig.PTA.SharedDnsPrefix      # "pta"
 $sharedFQDN    = "$sharedPrefix.$domain"            # pta.cyberark.lab
 $certCfg       = $CAConfig.PTA.Certificate
-$safeName      = $certCfg.SafeName
-$accountName   = $certCfg.AccountName
 $vaultAdminUser = $CAConfig.Vault.AdminUser
 $vaultAdminPass = $CAConfig.Vault.AdminPassword
-$pvwaVM        = $Config.VMs | Where-Object { $_.Role -contains 'PVWA' -or $_.Role -eq 'PVWA' } | Select-Object -First 1
-$pvwaBase      = "https://$($pvwaVM.IPAddress)/PasswordVault"
 $dcIP          = $Config.Network.DNS
 $dcCred        = New-Object PSCredential(
     "$($Config.Domain.NetBIOSName)\$($Config.Domain.DomainAdminUser)",
@@ -78,8 +72,6 @@ $labKeyPath    = Join-Path $PSScriptRoot "..\Config\pta_lab_key"
 $labKeyPath    = (Resolve-Path -LiteralPath (Split-Path $labKeyPath)).Path + "\pta_lab_key"
 
 if (-not (Test-Path $labKeyPath)) { throw "Lab SSH key not found at $labKeyPath - run 10-CreatePTAVM.ps1 first" }
-
-# TLS bypass for PVWA self-signed cert - -SkipCertificateCheck added to every Invoke-WebRequest call
 
 $sshOpts = @(
     "-i", $labKeyPath,
@@ -141,79 +133,9 @@ function Copy-FromPTA {
     if ($exit -ne 0) { throw "scp download failed for $RemotePath (exit $exit)" }
 }
 
-# ================================================================
-# Step 0: Store Vault admin credential in PVWA safe
-# ================================================================
 Write-Host ("=" * 70) -ForegroundColor Cyan
 Write-Host "PTA Certificate Configuration" -ForegroundColor Cyan
 Write-Host ("=" * 70) -ForegroundColor Cyan
-
-Write-Host "`n[Step 0] Storing Vault admin credential in PVWA safe '$safeName'..." -ForegroundColor Yellow
-
-$pvwaToken = $null
-try {
-    $logonBody = @{ username = $vaultAdminUser; password = $vaultAdminPass; concurrentSession = $true } | ConvertTo-Json
-    $logonResp = Invoke-WebRequest -Uri "$pvwaBase/api/auth/Cyberark/Logon" `
-        -Method POST -Body $logonBody -ContentType "application/json" -UseBasicParsing -SkipCertificateCheck
-    $pvwaToken = $logonResp.Content.Trim('"')
-    $pvwaHdrs  = @{ Authorization = $pvwaToken }
-    Write-Host "  Authenticated to PVWA" -ForegroundColor DarkGray
-
-    # Create safe if missing
-    $safeExists = $false
-    try {
-        $null = Invoke-WebRequest -Uri "$pvwaBase/api/Safes/$safeName" `
-            -Method GET -Headers $pvwaHdrs -UseBasicParsing -SkipCertificateCheck
-        $safeExists = $true
-        Write-Host "  Safe '$safeName' already exists" -ForegroundColor DarkGray
-    } catch {}
-
-    if (-not $safeExists) {
-        $safeBody = @{
-            safeName              = $safeName
-            description           = "PTA automation credentials - Vault admin for certificate operations"
-            numberOfDaysRetention = 0
-        } | ConvertTo-Json
-        $null = Invoke-WebRequest -Uri "$pvwaBase/api/Safes" -Method POST `
-            -Body $safeBody -ContentType "application/json" -Headers $pvwaHdrs -UseBasicParsing -SkipCertificateCheck
-        Write-Host "  Created safe '$safeName'" -ForegroundColor DarkGray
-    }
-
-    # Create account if missing - PASWS027E means already exists, treat as success
-    $acctBody = @{
-        name                      = $accountName
-        address                   = $CAConfig.Vault.VaultAddress
-        userName                  = $vaultAdminUser
-        platformId                = "WinDomain"
-        safeName                  = $safeName
-        secretType                = "password"
-        secret                    = $vaultAdminPass
-        platformAccountProperties = @{}
-    } | ConvertTo-Json
-    try {
-        $acctResp = Invoke-WebRequest -Uri "$pvwaBase/api/Accounts" -Method POST `
-            -Body $acctBody -ContentType "application/json" -Headers $pvwaHdrs -UseBasicParsing -SkipCertificateCheck
-        $acctId = ($acctResp.Content | ConvertFrom-Json).id
-        Write-Host "  [OK] Account '$accountName' created (id: $acctId)" -ForegroundColor Green
-    } catch {
-        $body = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { "" }
-        if ($body -match 'PASWS027E') {
-            Write-Host "  [OK] Account '$accountName' already exists in safe" -ForegroundColor Green
-        } else {
-            throw
-        }
-    }
-} catch {
-    $pvwaErr = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-    Write-Warning "Step 0 error: $pvwaErr"
-    Write-Warning "Continuing - will fall back to config password for cert installation"
-} finally {
-    if ($pvwaToken) {
-        $null = Invoke-WebRequest -Uri "$pvwaBase/api/auth/Logoff" -Method POST `
-            -Headers @{ Authorization = $pvwaToken } -UseBasicParsing -SkipCertificateCheck -ErrorAction SilentlyContinue
-        $pvwaToken = $null
-    }
-}
 
 # ================================================================
 # Step 1: Configure DC01 CA
@@ -433,7 +355,7 @@ foreach ($ptaVM in $ptaServers) {
     $csrScript = @"
 #!/bin/bash
 printf '$($csrAnswers -replace "'","'\''")' | bash $csrUtilPath 2>&1
-echo csr_exit:\$?
+echo csr_exit:`$?
 "@
     $tmpCsrScript = Join-Path $env:TEMP "pta_csr_gen.sh"
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -560,9 +482,9 @@ echo csr_exit:\$?
     Write-Host "       [OK] pta_server.crt + root_ca.crt on $($ptaVM.Name)" -ForegroundColor Green
 
     # ---------------------------------------------------------------
-    # Step 2g: Get Vault admin password from config
+    # Step 2g: Vault admin password (from CyberArkConfig.psd1)
     # ---------------------------------------------------------------
-    Write-Host "`n  [2g] Using Vault admin password from config (stored in PVWA safe '$safeName')" -ForegroundColor Yellow
+    Write-Host "`n  [2g] Using Vault admin password from CyberArkConfig.psd1" -ForegroundColor Yellow
     $installPass = $vaultAdminPass
 
     # ---------------------------------------------------------------
@@ -591,7 +513,7 @@ echo csr_exit:\$?
     $installScript = @"
 #!/bin/bash
 printf '$($installAnswers -replace "'","'\''")' | bash $installUtil 2>&1
-echo install_exit:\$?
+echo install_exit:`$?
 "@
     $tmpInstallScript = Join-Path $env:TEMP "pta_cert_install.sh"
     [System.IO.File]::WriteAllText($tmpInstallScript, ($installScript -replace "`r`n", "`n"), $utf8NoBom)
@@ -650,5 +572,4 @@ if ($SecondaryName) {
     Write-Host "  Web UI: https://$($primaryVM.IPAddress):8443" -ForegroundColor DarkGray
 }
 
-Write-Host "`n  Credentials stored in: PVWA > Safe '$safeName' > Account '$accountName'" -ForegroundColor DarkGray
 Write-Host ("=" * 70) -ForegroundColor Cyan
