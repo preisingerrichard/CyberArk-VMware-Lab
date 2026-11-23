@@ -394,7 +394,7 @@ All Windows domain service accounts the lab stores in PVWA (LDAP bind via `Vault
 - **`32-CreateConjurSystemFolders.ps1`** *(feature `ConjurSystemFolders`)* — creates `/opt/cyberark/conjur/{security,config,backup,seeds,logs}` on every appliance node (not APP01).
 - **`33-CopyConjurAppliance.ps1`** *(feature `ConjurAppliance`)* — real SCP (not guest-ops — the ~680 MB tarball is too large for VIX file transfer), bootstraps SSH key trust first. `-Load` also runs `podman load` + verification. Also stages the Conjur CLI RPM on nodes needing interactive admin access (default: just the Leader).
 - **`34-ConfigureConjurDNS.ps1`** *(feature `ConjurDNS`)* — creates per-node A-records plus `conjur-cluster` (leader/standby VIP) and `conjur-follower` (follower VIP) on DC01.
-- **`35-InstallConjurLeader.ps1`** *(feature `ConjurInstallLeader`)* — creates the Leader's Podman container (real seccomp profile, `AUDIT_WRITE` capability, `:z` mounts, `podman generate systemd` for reboot survival — all fixes for real Docker-vs-Podman gaps found by testing) and runs `evoke configure master`.
+- **`35-InstallConjurLeader.ps1`** *(feature `ConjurInstallLeader`)* — creates the Leader's Podman container (real seccomp profile, `AUDIT_WRITE` capability, `:z` mounts, `podman generate systemd` for reboot survival — all fixes for real Docker-vs-Podman gaps found by testing). It does **not** run `evoke configure master`: that needs the cluster name, admin password and account decided first, so the script prints the command for you to run inside the container.
 - **`36-ImportConjurCertificates.ps1`** *(feature `ConjurImportCertificates`)* — issues leader/standby and follower certificates from the DC01 Enterprise CA and imports them via `evoke ca import`.
 - **`37-EncryptConjurLeaderKeys.ps1`** *(feature `ConjurEncryptKeys`)* — generates a native master key and runs the `evoke keys lock`/`encrypt`/`unlock` cycle. **Unlock does not persist across restarts** — must be re-run after every container/host restart.
 - **`38-InstallConjurStandby.ps1`** *(feature `ConjurInstallStandby`)* — seeds and configures a Standby, including a scripted workaround for a real `evoke unpack seed` bug (GNU tar's symlink-chmod call fails under Podman; content lands correctly regardless, only the exit code is wrong — worked around, not silently ignored).
@@ -415,7 +415,7 @@ Single menu/parameter-driven entry point for **opt-in** add-ons that are not par
 - **ConjurSystemFolders** — create the `/opt/cyberark/conjur/{security,config,backup,seeds,logs}` folder set on every Conjur appliance node
 - **ConjurAppliance** — copy the Conjur appliance tarball + CLI RPM to the nodes (dispatches to `Scripts\33-CopyConjurAppliance.ps1`, real SCP not guest-ops — the tarball is too large for VIX)
 - **ConjurDNS** — create the Conjur A-records (per-node + cluster/follower VIPs) on DC01
-- **ConjurInstallLeader** — bring up the Leader container and run `evoke configure master`
+- **ConjurInstallLeader** — bring up the Leader container; prints the `evoke configure master` command to run next (not run by the script)
 - **ConjurImportCertificates** — issue + import DC01 CA-signed leader/follower certs into the Leader
 - **ConjurEncryptKeys** — encrypt the Leader's server keys with a native master key
 - **ConjurInstallStandby** — create + configure a Standby — pass `-ConjurStandbyVMName`
@@ -488,6 +488,8 @@ Once `CONJUR-L01` exists (RHEL 9, static IP `192.168.100.60`, `open-vm-tools` ru
 
 # 5. Bring up the Leader, import CA-signed certs, set up native key encryption
 .\Deploy-Optional.ps1 -Feature ConjurInstallLeader
+#    then by hand on CONJUR-L01, using the command the step prints:
+#    podman exec conjur evoke configure master --accept-eula --hostname <cluster-dns> --master-altnames "<leader-dns>,<standby1-dns>,<standby2-dns>" --admin-password <password> <account>
 .\Deploy-Optional.ps1 -Feature ConjurImportCertificates
 .\Deploy-Optional.ps1 -Feature ConjurEncryptKeys
 

@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 ### Changed
 - `Deploy-Optional.ps1`: **ReconcileAccount** and **DiscoveryAccount** store their accounts in a separate safe `Lab-ServiceAccounts` instead of `VaultInternal`. The safe is created if missing and managed by the logged-on CPM. In `VaultInternal` (no managing CPM) the CPM could not use the reconcile account, so every reconcile failed. `VaultInternal` stays reserved for the LDAP bind account. Existing labs: rerun both features, then remove the old copies from `VaultInternal`.
 
+### Fixed
+- README: the descriptions of `35-InstallConjurLeader.ps1` and the `ConjurInstallLeader` feature said they run `evoke configure master`. They don't: the step creates the Leader container and prints the command. The Conjur walkthrough now shows the manual `evoke configure master` step between `ConjurInstallLeader` and `ConjurImportCertificates`.
+
 ## [1.7.0] - 2026-11-22
 
 ### Added
