@@ -8,8 +8,8 @@
 
     This is deliberately scoped to container creation only - it does NOT run
     `evoke configure master` (that needs cluster name, admin password, and
-    account name decided first; see CLIENT-CONJUR-INSTALL-CHECKLIST.md). Run
-    that separately once you've confirmed the final node/altname list.
+    account name decided first). The script prints the command at the end;
+    run it separately once you've confirmed the final node/altname list.
 
     Steps (guest-ops over vmrun, same pattern as Scripts\30-34):
       1. Wait for guest-ops

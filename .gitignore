@@ -43,6 +43,7 @@ __pycache__/
 
 # ── Private client-engagement notes (never for GitHub) ────────────
 CLIENT-*.md
+Clients/
 
 # ── Playwright E2E demo for the blog article (never for GitHub) ───
 # Local-only test project run against this lab's PVWA; the article

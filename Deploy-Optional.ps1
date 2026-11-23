@@ -413,7 +413,7 @@ function Invoke-ConjurDNS {
 #   Creates + starts the Conjur Leader container with a real (not
 #   unconfined) seccomp profile extracted from the loaded image. Does NOT
 #   run evoke configure - that needs cluster/admin decisions confirmed
-#   first (see CLIENT-CONJUR-INSTALL-CHECKLIST.md).
+#   first; the script prints the command to run next.
 # ================================================================
 function Invoke-ConjurInstallLeader {
     Write-Host "`n### ConjurInstallLeader ###" -ForegroundColor Cyan

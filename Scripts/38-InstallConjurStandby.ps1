@@ -39,9 +39,8 @@
          mode), missing capabilities (CAP_FOWNER/CAP_CHOWN both present),
          storage driver (overlay-native and bind-mounted paths both fail
          identically), TAR_OPTIONS=--no-same-permissions (changes the
-         attempted mode, not whether tar attempts it). Filed as a CyberArk
-         support ticket - see CLIENT-CONJUR-INSTALL-CHECKLIST.md Section 2
-         for the full writeup. The actual file content lands correctly
+         attempted mode, not whether tar attempts it). Reported to CyberArk
+         support. The actual file content lands correctly
          despite the error - only the cosmetic symlink-chmod step fails, and
          evoke's own remaining checks (`remove_seed_file` is a no-op when
          seeding via stdin; `ensure_key_present` only checks a real
