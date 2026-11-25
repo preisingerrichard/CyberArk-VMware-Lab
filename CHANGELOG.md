@@ -10,6 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 
 ### Fixed
 - README: the descriptions of `35-InstallConjurLeader.ps1` and the `ConjurInstallLeader` feature said they run `evoke configure master`. They don't: the step creates the Leader container and prints the command. The Conjur walkthrough now shows the manual `evoke configure master` step between `ConjurInstallLeader` and `ConjurImportCertificates`.
+- `Deploy-Optional.ps1 -Feature ConjurImportCertificates` failed because `Scripts\36-ImportConjurCertificates.ps1` was missing from 1.7.0 while the feature and README still used it. The script is back. Its root-CA export now reads the CA certificate from DC01's certificate store and builds the PEM in PowerShell instead of running `cmd.exe` + `certutil -encode` with temp files. Bitdefender's heuristic quarantined the earlier version of this script; the new one is not flagged. **UNTESTED end to end, feedback welcome.**
 
 ## [1.7.0] - 2026-11-22
 
