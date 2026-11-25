@@ -4,7 +4,15 @@
     into the Conjur Leader (Installation deck Step 8 / Exercise Guide's
     3-import-cert.sh).
 .DESCRIPTION
-    UNTESTED - first validation run pending.
+    Run end to end against the lab HA cluster (Leader + 2 Standbys + Follower)
+    on 2026-11-25: certificates issued, imported and served through the load
+    balancer; Standby replication and Follower audit forwarding unaffected.
+    The sv restart timeout found in that run is fixed below (fix verified on
+    its own, the full script not re-run since).
+
+    Rotation on a running cluster: only the Leader serves the new certificate.
+    Standbys and Followers keep the certificates from their seed (same CA, so
+    still trusted) until they are re-seeded.
 
     Conjur ships no CSR-generation utility (unlike PTA's
     certificateSigningRequestGenerationUtil.sh) - the deck's own reference
@@ -316,10 +324,12 @@ podman exec `$containerName evoke ca import --no-restart --force --root `$certDi
 podman exec `$containerName evoke ca import --no-restart --key `$certDir/conjur-leader.key --set `$certDir/conjur-leader.cer
 podman exec `$containerName evoke ca import --no-restart --key `$certDir/conjur-follower.key `$certDir/conjur-follower.cer
 
-podman exec `$containerName sv restart conjur nginx pg seed
+# -w 120: runit's sv waits only 7 s by default; seed needs ~9 s, so a plain
+# restart exits 1 ("timeout: run: seed") although the restart succeeds.
+podman exec `$containerName sv -w 120 restart conjur nginx pg seed
 touch $marker
 "@
-Invoke-GuestScriptChecked -ScriptText $importScript -Marker $marker -Label "Import certificates" -TimeoutSec 120
+Invoke-GuestScriptChecked -ScriptText $importScript -Marker $marker -Label "Import certificates" -TimeoutSec 300
 Invoke-VMRun -Arguments @("-gu",$GuestUser,"-gp",$GuestPass,
     "runProgramInGuest",$vmx,"/bin/bash","-c","rm -f $marker") -NoThrow | Out-Null
 Write-Host "  [OK] Certificates imported, services restarted" -ForegroundColor Green
